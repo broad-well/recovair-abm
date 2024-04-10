@@ -1,16 +1,20 @@
 use chrono::{DateTime, Duration, Utc};
 
-use crate::{aircraft::{Aircraft, Flight}, airport::{AirportCode, Disruption}, crew::CrewId};
+use crate::{
+    aircraft::{Aircraft, Flight},
+    airport::{AirportCode, Disruption},
+    crew::CrewId,
+};
 
 pub struct ModelEvent<'a> {
     time: DateTime<Utc>,
-    data: ModelEventType<'a>
+    data: ModelEventType<'a>,
 }
 
 pub enum DelayReason<'a> {
     CrewShortage,
     AircraftShortage,
-    RateLimited(AirportCode, &'a dyn Disruption<'a>)
+    RateLimited(AirportCode, &'a dyn Disruption<'a>),
 }
 
 pub enum ModelEventType<'a> {
@@ -35,5 +39,5 @@ pub enum ModelEventType<'a> {
     // Sender: Dispatcher
     CrewSelection(&'a str, Vec<CrewId>),
     /// (Flight number, tail numbers to choose from)
-    AircraftSelection(&'a str, Vec<String>)
+    AircraftSelection(&'a str, Vec<String>),
 }

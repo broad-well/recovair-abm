@@ -1,6 +1,6 @@
 use crate::airport::*;
-use chrono::{DateTime, Utc};
 use crate::crew::CrewId;
+use chrono::{DateTime, Utc};
 
 /// Represents a flight (either planned or executed).
 /// If `arrive_time` is None, then this must be a flight in progress.
@@ -20,7 +20,7 @@ pub struct Flight<'a> {
     pub arrive_time: Option<DateTime<Utc>>,
 
     pub sched_depart: DateTime<Utc>,
-    pub sched_arrive: DateTime<Utc>
+    pub sched_arrive: DateTime<Utc>,
 }
 
 impl<'a> PartialEq for Flight<'a> {
@@ -44,7 +44,7 @@ impl<'a> Flight<'a> {
 #[derive(Debug)]
 pub enum Location<'a> {
     Ground(AirportCode),
-    InFlight(&'a Flight<'a>)
+    InFlight(&'a Flight<'a>),
 }
 
 #[derive(Debug)]
@@ -54,4 +54,3 @@ pub struct Aircraft<'a> {
     /// (Name, passenger capacity)
     type_: (String, u16),
 }
-

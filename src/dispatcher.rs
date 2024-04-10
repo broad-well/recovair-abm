@@ -1,5 +1,1 @@
-
-
-pub struct Dispatcher {
-    
-}
+pub struct Dispatcher {}
