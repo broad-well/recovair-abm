@@ -2,7 +2,9 @@ mod aircraft;
 mod airport;
 mod crew;
 mod model;
+mod dispatcher;
 mod metrics;
+mod scenario;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

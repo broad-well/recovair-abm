@@ -11,7 +11,7 @@ pub struct Crew<'a> {
     id: CrewId,
     location: Location<'a>,
     /// Ordered by time
-    duty: Vec<&'a Flight>,
+    duty: Vec<&'a Flight<'a>>,
     model: &'a Model<'a>
 }
 

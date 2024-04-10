@@ -1,31 +1,39 @@
 use chrono::{DateTime, Duration, Utc};
 
-use crate::{aircraft::Flight, airport::AirportCode};
+use crate::{aircraft::{Aircraft, Flight}, airport::{AirportCode, Disruption}, crew::CrewId};
 
 pub struct ModelEvent<'a> {
     time: DateTime<Utc>,
     data: ModelEventType<'a>
 }
 
-pub enum DelayReason {
+pub enum DelayReason<'a> {
     CrewShortage,
     AircraftShortage,
-    RateLimited(AirportCode)
+    RateLimited(AirportCode, &'a dyn Disruption<'a>)
 }
 
 pub enum ModelEventType<'a> {
     // -- Flight lifecycle --
-    FlightDepartureDelayed(&'a Flight, Duration, DelayReason),
-    FlightCancelled(&'a Flight),
-    FlightDeparted(&'a Flight),
-    FlightArrivalDelayed(&'a Flight, Duration),
-    FlightArrived(&'a Flight),
+    // Sender: Dispatcher
+    FlightDepartureDelayed(&'a Flight<'a>, Duration, DelayReason<'a>),
+    FlightCancelled(&'a Flight<'a>),
+    FlightDeparted(&'a Flight<'a>),
+    FlightArrivalDelayed(&'a Flight<'a>, Duration),
+    FlightArrived(&'a Flight<'a>),
 
     // -- Aircraft stats --
-    AircraftTurnedAround(&'a Aircraft, AirportCode, Duration),
-    
+    // Sender: Dispatcher
+    AircraftTurnedAround(&'a Aircraft<'a>, AirportCode, Duration),
 
     // -- Scheduled changes --
-    CrewAssignmentChanged(&'a Flight),
-    
+    // Sender: Dispatcher
+    CrewAssignmentChanged(&'a Flight<'a>),
+    AircraftAssignmentChanged(&'a Flight<'a>),
+
+    // -- Decision points --
+    // Sender: Dispatcher
+    CrewSelection(&'a str, Vec<CrewId>),
+    /// (Flight number, tail numbers to choose from)
+    AircraftSelection(&'a str, Vec<String>)
 }

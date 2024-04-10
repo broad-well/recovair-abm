@@ -7,12 +7,13 @@ use crate::crew::CrewId;
 ///
 /// Owner: Model
 #[derive(Debug)]
-pub struct Flight {
-    /// If none, then ferry flight
-    pub flight_number: Option<String>,
+pub struct Flight<'a> {
+    pub flight_number: String,
     pub aircraft_tail: String,
     /// First element is piloting, the rest are deadheading
     pub crew: Vec<CrewId>,
+    /// If empty, then this is a ferry flight
+    pub passengers: Vec<PassengerGroup<'a>>,
     pub origin: AirportCode,
     pub dest: AirportCode,
     pub depart_time: Option<DateTime<Utc>>,
@@ -22,10 +23,20 @@ pub struct Flight {
     pub sched_arrive: DateTime<Utc>
 }
 
-impl Flight {
+impl<'a> PartialEq for Flight<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.flight_number == other.flight_number
+    }
+}
+
+impl<'a> Flight<'a> {
     #[inline]
     pub fn in_flight(&self) -> bool {
         self.arrive_time.is_none()
+    }
+
+    pub fn est_arrive_time(&self, depart: &DateTime<Utc>) -> DateTime<Utc> {
+        *depart + (self.sched_arrive - self.sched_depart)
     }
 }
 
@@ -33,13 +44,14 @@ impl Flight {
 #[derive(Debug)]
 pub enum Location<'a> {
     Ground(AirportCode),
-    InFlight(&'a Flight)
+    InFlight(&'a Flight<'a>)
 }
 
 #[derive(Debug)]
 pub struct Aircraft<'a> {
     tail: String,
     location: Location<'a>,
-    type_: (String, u16)
+    /// (Name, passenger capacity)
+    type_: (String, u16),
 }
 
