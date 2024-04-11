@@ -1,10 +1,12 @@
-mod aircraft;
-mod airport;
-mod crew;
-mod dispatcher;
-mod metrics;
-mod model;
-mod scenario;
+extern crate chrono;
+
+pub mod aircraft;
+pub mod airport;
+pub mod crew;
+pub mod dispatcher;
+pub mod metrics;
+pub mod model;
+pub mod scenario;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

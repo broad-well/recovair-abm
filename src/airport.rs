@@ -1,33 +1,33 @@
 use chrono::{DateTime, TimeDelta, Utc};
-use std::collections::LinkedList;
+use std::{
+    collections::LinkedList,
+    sync::{Arc, RwLock, RwLockReadGuard},
+};
 
 use crate::{
-    aircraft::{Aircraft, Flight},
-    crew::Crew,
+    aircraft::{Aircraft, Flight, FlightId},
+    crew::{Crew, CrewId},
     model::Model,
 };
 
 pub type AirportCode = [u8; 3];
 #[derive(Debug)]
-pub struct Airport<'a> {
+pub struct Airport {
     pub code: AirportCode,
-    pub model: &'a Model<'a>,
-    pub fleet: LinkedList<&'a Aircraft<'a>>,
-    pub crew: LinkedList<&'a Crew<'a>>,
-    pub passengers: LinkedList<PassengerGroup<'a>>,
+    pub fleet: LinkedList<String>,
+    pub crew: LinkedList<CrewId>,
+    // TODO consolidate demand path
+    pub passengers: LinkedList<PassengerDemand>,
+
+    pub max_dep_per_hour: u32,
+    pub max_arr_per_hour: u32,
+    departure_count: (DateTime<Utc>, u32),
+    arrival_count: (DateTime<Utc>, u32),
 }
 
+#[derive(Debug)]
 pub struct PassengerDemand {
     pub path: Vec<AirportCode>,
-    pub count: u32,
-}
-
-/// Group of passengers transported
-///
-/// Owner: Airport or Flight
-#[derive(Debug)]
-pub struct PassengerGroup<'a> {
-    pub path: &'a [AirportCode],
     pub count: u32,
 }
 
@@ -42,12 +42,13 @@ pub enum Clearance {
     Deferred(DateTime<Utc>),
 }
 
-pub trait Disruption<'a>: std::fmt::Debug {
-    /// Mutability for tracking slots internally
-    ///
+pub trait Disruption: std::fmt::Debug {
     /// By design, we should call this AFTER ensuring that all the resources are present for the flight
     /// (aircraft, crew, passengers)
-    fn request_depart(&mut self, flight: &'a Flight<'a>) -> Clearance;
+    fn request_depart(&mut self, flight: RwLockReadGuard<'_, Flight>) -> Clearance;
+    fn request_arrive(&mut self, _flight: RwLockReadGuard<'_, Flight>) -> Clearance {
+        Clearance::Cleared
+    }
 
     fn describe(&self) -> String;
 }
@@ -103,15 +104,15 @@ impl<T: PartialEq> SlotManager<T> {
 }
 
 #[derive(Debug)]
-pub struct GroundDelayProgram<'a> {
+pub struct GroundDelayProgram {
     pub site: AirportCode,
     // Room to add origin ARTCCs
-    pub slots: SlotManager<&'a Flight<'a>>,
+    pub slots: SlotManager<FlightId>,
     pub reason: Option<String>,
-    model: &'a Model<'a>,
+    model: Arc<Model>,
 }
 
-impl<'a> GroundDelayProgram<'a> {
+impl GroundDelayProgram {
     #[inline]
     pub fn start(&self) -> &DateTime<Utc> {
         &self.slots.start
@@ -122,8 +123,8 @@ impl<'a> GroundDelayProgram<'a> {
     }
 }
 
-impl<'a> Disruption<'a> for GroundDelayProgram<'a> {
-    fn request_depart(&mut self, flight: &'a Flight<'a>) -> Clearance {
+impl Disruption for GroundDelayProgram {
+    fn request_depart(&mut self, flight: RwLockReadGuard<'_, Flight>) -> Clearance {
         if flight.dest != self.site {
             return Clearance::Cleared;
         }
@@ -135,9 +136,9 @@ impl<'a> Disruption<'a> for GroundDelayProgram<'a> {
         // this generally works in favor of reducing delays relative to scheduled departure time
         // because earlier scheduled flights request departure before later ones
         // if already given a slot in the currently scheduled arrive time, then clear it
-        if self.slots.slotted_at(&arrive, &flight) {
+        if self.slots.slotted_at(&arrive, &flight.id) {
             Clearance::Cleared
-        } else if let Some(edct) = self.slots.allocate_slot(&arrive, flight) {
+        } else if let Some(edct) = self.slots.allocate_slot(&arrive, flight.id) {
             Clearance::EDCT(edct)
         } else {
             // Can't fit during this GDP. check later
@@ -166,15 +167,15 @@ impl<'a> Disruption<'a> for GroundDelayProgram<'a> {
 }
 
 #[derive(Debug)]
-pub struct DepartureRateLimit<'a> {
+pub struct DepartureRateLimit {
     site: AirportCode,
-    slots: SlotManager<&'a Flight<'a>>,
+    slots: SlotManager<FlightId>,
     reason: Option<String>,
-    model: &'a Model<'a>,
+    model: Arc<Model>,
 }
 
-impl<'a> Disruption<'a> for DepartureRateLimit<'a> {
-    fn request_depart(&mut self, flight: &'a Flight<'a>) -> Clearance {
+impl Disruption for DepartureRateLimit {
+    fn request_depart(&mut self, flight: RwLockReadGuard<'_, Flight>) -> Clearance {
         if flight.origin != self.site {
             return Clearance::Cleared;
         }
@@ -182,9 +183,9 @@ impl<'a> Disruption<'a> for DepartureRateLimit<'a> {
             return Clearance::Cleared;
         }
 
-        if self.slots.slotted_at(&self.model.now, &flight) {
+        if self.slots.slotted_at(&self.model.now, &flight.id) {
             Clearance::Cleared
-        } else if let Some(edct) = self.slots.allocate_slot(&self.model.now, flight) {
+        } else if let Some(edct) = self.slots.allocate_slot(&self.model.now, flight.id) {
             Clearance::EDCT(edct)
         } else {
             Clearance::Deferred(self.slots.end)
