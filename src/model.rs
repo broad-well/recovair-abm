@@ -1,12 +1,14 @@
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
-    airport::{Airport, AirportCode, Disruption},
+    airport::{Airport, AirportCode, Clearance, Disruption},
     crew::{Crew, CrewId},
     metrics::{ModelEvent, ModelEventType},
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
+    cell::Cell,
     collections::HashMap,
+    rc::Weak,
     sync::{mpsc, Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
     thread::Thread,
 };
@@ -24,7 +26,7 @@ pub struct Model {
     pub crew: HashMap<CrewId, Arc<RwLock<Crew>>>,
     pub airports: HashMap<AirportCode, Arc<RwLock<Airport>>>,
     pub flights: HashMap<FlightId, Arc<RwLock<Flight>>>,
-    pub disruptions: Vec<Arc<dyn Disruption>>,
+    pub disruptions: Vec<Arc<RwLock<dyn Disruption>>>,
     pub publisher: mpsc::Sender<ModelEvent>,
 
     pub metrics_thread: Thread,
@@ -55,7 +57,7 @@ impl Model {
     }
 
     /// Make the given flight depart from its origin, i.e., transition from Scheduled to Enroute.
-    pub fn depart_flight(&mut self, flight_id: u64) {
+    pub fn depart_flight(&self, flight_id: FlightId) {
         let now = self.now;
         {
             let mut flight = self.flight_write(flight_id);
@@ -72,22 +74,24 @@ impl Model {
             // This sends AircraftTurnedAround
             send_event!(self, aircraft.takeoff(flight_id, self.now));
         }
+        let flight = self.flights.get(&flight_id).unwrap().read().unwrap();
         for crew_id in &flight.crew {
             self.crew
-                .get_mut(crew_id)
+                .get(crew_id)
                 .unwrap()
                 .write()
                 .unwrap()
-                .takeoff(flight_id);
+                .takeoff(&flight);
         }
-        send_event!(
-            self,
-            ModelEventType::FlightDeparted(self.flights.get(&flight_id).unwrap().clone())
-        );
+        {
+            let mut origin = self.airports.get(&flight.origin).unwrap().write().unwrap();
+            origin.mark_departure(self.now);
+        }
+        send_event!(self, ModelEventType::FlightDeparted(flight_id));
     }
 
     /// Make the given flight arrive at its destination, i.e., transition from Enroute to Scheduled.
-    pub fn arrive_flight(&mut self, flight_id: u64) {
+    pub fn arrive_flight(&self, flight_id: FlightId) {
         // Update: Flight, resources (Aircraft, Crew)
         {
             let mut flight = self.flight_write(flight_id);
@@ -105,12 +109,77 @@ impl Model {
             aircraft.land(flight.dest, self.now);
         }
         for crew_id in &flight.crew {
-            self.crew.get(crew_id).unwrap().write().unwrap().land();
+            self.crew
+                .get(crew_id)
+                .unwrap()
+                .write()
+                .unwrap()
+                .land(&flight, self.now);
         }
-        send_event!(
-            self,
-            ModelEventType::FlightArrived(self.flights.get(&flight_id).unwrap().clone())
-        )
+        {
+            let mut dest = self.airports.get(&flight.dest).unwrap().write().unwrap();
+            dest.mark_arrival(self.now);
+        }
+        send_event!(self, ModelEventType::FlightArrived(flight_id))
+    }
+
+    pub fn cancel_flight(&self, flight_id: FlightId) {
+        let mut flt = self.flight_write(flight_id);
+        flt.cancelled = true;
+        send_event!(self, ModelEventType::FlightCancelled(flight_id));
+    }
+
+    pub fn request_departure(
+        &self,
+        flight_id: FlightId,
+    ) -> (Clearance, Option<Arc<RwLock<dyn Disruption>>>) {
+        let flt = self.flights.get(&flight_id).unwrap();
+        let effective_disruption = self
+            .disruptions
+            .iter()
+            .map(|disruption| {
+                (
+                    disruption.clone(),
+                    disruption
+                        .write()
+                        .unwrap()
+                        .request_depart(flt.read().unwrap()),
+                )
+            })
+            .max_by(|a, b| a.1.cmp(&b.1));
+
+        if let Some((disruption, clearance)) = effective_disruption {
+            (clearance, Some(disruption))
+        } else {
+            (Clearance::Cleared, None)
+        }
+    }
+
+    // TODO reduce duplication
+    pub fn request_arrival(
+        &self,
+        flight_id: FlightId,
+    ) -> (Clearance, Option<Arc<RwLock<dyn Disruption>>>) {
+        let flt = self.flights.get(&flight_id).unwrap();
+        let effective_disruption = self
+            .disruptions
+            .iter()
+            .map(|disruption| {
+                (
+                    disruption.clone(),
+                    disruption
+                        .write()
+                        .unwrap()
+                        .request_arrive(flt.read().unwrap()),
+                )
+            })
+            .max_by(|a, b| a.1.cmp(&b.1));
+
+        if let Some((disruption, clearance)) = effective_disruption {
+            (clearance, Some(disruption))
+        } else {
+            (Clearance::Cleared, None)
+        }
     }
 }
 

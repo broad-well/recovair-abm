@@ -1,4 +1,5 @@
 use crate::crew::CrewId;
+use crate::model::Model;
 use crate::{airport::*, metrics::ModelEventType};
 use chrono::{DateTime, Utc};
 
@@ -19,6 +20,7 @@ pub struct Flight {
     pub passengers: Vec<PassengerDemand>,
     pub origin: AirportCode,
     pub dest: AirportCode,
+    pub cancelled: bool,
     pub depart_time: Option<DateTime<Utc>>,
     pub arrive_time: Option<DateTime<Utc>>,
 
@@ -62,6 +64,15 @@ impl Flight {
     pub fn land(&mut self, time: DateTime<Utc>) {
         self.arrive_time = Some(time);
     }
+
+    pub fn reassign_aircraft(&mut self, tail: String) {
+        self.aircraft_tail = tail;
+    }
+
+    pub fn reassign_crew(&mut self, id: Vec<CrewId>) {
+        assert!(!id.is_empty());
+        self.crew = id;
+    }
 }
 
 /// Owner: Aircraft or Crew
@@ -91,5 +102,17 @@ impl Aircraft {
 
     pub fn land(&mut self, loc: AirportCode, time: DateTime<Utc>) {
         self.location = Location::Ground(loc, time);
+    }
+
+    pub fn available_time(&self, model: &Model, airport: AirportCode) -> Option<DateTime<Utc>> {
+        if let Location::Ground(_airport, since_time) = self.location {
+            if _airport == airport {
+                Some(since_time + model.config.aircraft_turnaround_time)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 }

@@ -1,11 +1,12 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 use chrono::{DateTime, Duration, Utc};
 
 use crate::{
-    aircraft::Flight,
+    aircraft::{Flight, FlightId},
     airport::{AirportCode, Disruption},
     crew::CrewId,
+    model::Model,
 };
 
 pub struct ModelEvent {
@@ -17,7 +18,8 @@ pub struct ModelEvent {
 pub enum DelayReason {
     CrewShortage,
     AircraftShortage,
-    RateLimited(AirportCode, Arc<dyn Disruption>),
+    Disrupted(Weak<RwLock<dyn Disruption>>),
+    RateLimited(AirportCode),
 }
 
 #[derive(Debug, Clone)]
@@ -25,11 +27,11 @@ pub enum ModelEventType {
     // -- Flight lifecycle --
     // Sender: Dispatcher
     // (A Flight object does not change once arrived)
-    FlightDepartureDelayed(Arc<RwLock<Flight>>, Duration, DelayReason),
-    FlightCancelled(Arc<RwLock<Flight>>),
-    FlightDeparted(Arc<RwLock<Flight>>),
-    FlightArrivalDelayed(Arc<RwLock<Flight>>, Duration),
-    FlightArrived(Arc<RwLock<Flight>>),
+    FlightDepartureDelayed(FlightId, Duration, DelayReason),
+    FlightCancelled(FlightId),
+    FlightDeparted(FlightId),
+    FlightArrivalDelayed(FlightId, Duration, DelayReason),
+    FlightArrived(FlightId),
 
     // -- Aircraft stats --
     // Sender: Dispatcher
@@ -37,14 +39,13 @@ pub enum ModelEventType {
 
     // -- Scheduled changes --
     // Sender: Dispatcher
-    CrewAssignmentChanged(Arc<RwLock<Flight>>),
-    AircraftAssignmentChanged(Arc<RwLock<Flight>>),
+    CrewAssignmentChanged(FlightId),
+    AircraftAssignmentChanged(FlightId),
 
     // -- Decision points --
     // Sender: Dispatcher
-    CrewSelection(String, Vec<CrewId>),
-    /// (Flight number, tail numbers to choose from)
-    AircraftSelection(String, Vec<String>),
+    CrewSelection(FlightId, Vec<CrewId>),
+    AircraftSelection(FlightId, String),
 
     // -- Completion --
     SimulationComplete,

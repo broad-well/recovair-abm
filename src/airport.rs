@@ -1,6 +1,8 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
+    cmp::Ordering,
     collections::LinkedList,
+    rc::Weak,
     sync::{Arc, RwLock, RwLockReadGuard},
 };
 
@@ -25,6 +27,51 @@ pub struct Airport {
     arrival_count: (DateTime<Utc>, u32),
 }
 
+impl Airport {
+    pub fn depart_time(&self, time: DateTime<Utc>) -> DateTime<Utc> {
+        if time - self.departure_count.0 >= TimeDelta::hours(1) {
+            // Seems like we need to reset the counter
+            time
+        } else if self.departure_count.1 < self.max_dep_per_hour {
+            // We can fit it in
+            time
+        } else {
+            // Delayed to the next slot
+            self.departure_count.0 + TimeDelta::minutes(60)
+        }
+    }
+
+    pub fn mark_departure(&mut self, time: DateTime<Utc>) {
+        if time - self.departure_count.0 >= TimeDelta::hours(1) {
+            self.departure_count = (time, 1);
+        } else {
+            self.departure_count.1 += 1
+        }
+    }
+
+    // TODO reduce duplication
+    pub fn arrive_time(&self, time: DateTime<Utc>) -> DateTime<Utc> {
+        if time - self.arrival_count.0 >= TimeDelta::hours(1) {
+            // Seems like we need to reset the counter
+            time
+        } else if self.arrival_count.1 < self.max_arr_per_hour {
+            // We can fit it in
+            time
+        } else {
+            // Delayed to the next slot
+            self.arrival_count.0 + TimeDelta::minutes(60)
+        }
+    }
+
+    pub fn mark_arrival(&mut self, time: DateTime<Utc>) {
+        if time - self.arrival_count.0 >= TimeDelta::hours(1) {
+            self.arrival_count = (time, 1);
+        } else {
+            self.arrival_count.1 += 1
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PassengerDemand {
     pub path: Vec<AirportCode>,
@@ -33,6 +80,7 @@ pub struct PassengerDemand {
 
 // MARK: Disruptions
 
+#[derive(PartialEq, Eq, Debug)]
 pub enum Clearance {
     Cleared,
     /// Unlikely to be delayed further
@@ -40,6 +88,47 @@ pub enum Clearance {
     EDCT(DateTime<Utc>),
     /// Delay, no implication on likelihood to be delayed further
     Deferred(DateTime<Utc>),
+}
+
+impl Clearance {
+    pub fn time(&self) -> Option<&DateTime<Utc>> {
+        match self {
+            Self::Cleared => None,
+            Self::EDCT(dt) => Some(dt),
+            Self::Deferred(dt) => Some(dt),
+        }
+    }
+}
+
+impl Ord for Clearance {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self == other {
+            Ordering::Equal
+        } else if matches!(self, Clearance::Cleared) {
+            Ordering::Less
+        } else if matches!(other, Clearance::Cleared) {
+            Ordering::Greater
+        } else {
+            let self_time = self.time().unwrap();
+            let other_time = other.time().unwrap();
+            if self_time != other_time {
+                self_time.cmp(other_time)
+            } else if matches!(self, Clearance::EDCT(_)) {
+                // !=, none cleared, time the same
+                assert!(matches!(other, Clearance::Deferred(_)));
+                Ordering::Less
+            } else {
+                assert!(matches!(other, Clearance::EDCT(_)));
+                Ordering::Greater
+            }
+        }
+    }
+}
+
+impl PartialOrd for Clearance {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 pub trait Disruption: std::fmt::Debug {
@@ -109,7 +198,7 @@ pub struct GroundDelayProgram {
     // Room to add origin ARTCCs
     pub slots: SlotManager<FlightId>,
     pub reason: Option<String>,
-    model: Arc<Model>,
+    model: Weak<Model>,
 }
 
 impl GroundDelayProgram {
@@ -128,7 +217,7 @@ impl Disruption for GroundDelayProgram {
         if flight.dest != self.site {
             return Clearance::Cleared;
         }
-        let arrive = flight.est_arrive_time(&self.model.now);
+        let arrive = flight.est_arrive_time(&self.model.upgrade().unwrap().now);
         if !self.slots.contains(&arrive) {
             return Clearance::Cleared;
         }
@@ -208,5 +297,41 @@ impl Disruption for DepartureRateLimit {
                 self.slots.end
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearance_comp_different_time() {
+        let mut c1 = Clearance::Cleared;
+        let now = Utc::now();
+        let mut c2 = Clearance::EDCT(now);
+
+        assert!(c1 < c2);
+        c2 = Clearance::Deferred(now);
+        assert!(c1 < c2);
+
+        c1 = Clearance::EDCT(now + TimeDelta::minutes(2));
+        assert!(c1 > c2);
+
+        c2 = Clearance::EDCT(now + TimeDelta::minutes(10));
+        assert!(c1 < c2);
+
+        c1 = Clearance::Deferred(now);
+        c2 = Clearance::Deferred(now + TimeDelta::minutes(20));
+        assert!(c1 < c2);
+        assert!(c2 > c1);
+    }
+
+    #[test]
+    fn clearance_comp_same_time() {
+        let now = Utc::now();
+        assert_eq!(Clearance::EDCT(now), Clearance::EDCT(now));
+        assert_eq!(Clearance::Deferred(now), Clearance::Deferred(now));
+        assert!(Clearance::EDCT(now) < Clearance::Deferred(now));
+        assert!(Clearance::Deferred(now) > Clearance::EDCT(now));
     }
 }
