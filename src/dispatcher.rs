@@ -16,7 +16,7 @@ use std::{
 use crate::{
     aircraft::{Flight, FlightId},
     crew::CrewId,
-    metrics::{DelayReason, ModelEvent, ModelEventType},
+    metrics::{CancelReason, DelayReason, ModelEvent, ModelEventType},
     model::Model,
 };
 use chrono::{DateTime, TimeDelta, Utc};
@@ -24,7 +24,6 @@ use chrono::{DateTime, TimeDelta, Utc};
 pub enum UpdateType {
     CheckDepart,
     CheckArrive,
-    Cancel,
 }
 
 pub struct DispatcherUpdate {
@@ -54,8 +53,8 @@ impl Ord for DispatcherUpdate {
 static RESOURCE_WAIT: TimeDelta = TimeDelta::minutes(10);
 
 pub trait AircraftSelectionStrategy {
-    /// Reassign the given flight to any aircraft. The aircraft should be expected to
-    /// become available for the flight within a few hours of its scheduled departure time.
+    /// Reassign the given flight to any aircraft. The aircraft should be at the flight's origin
+    /// or arriving at the flight's origin.
     ///
     /// To cancel the flight, return None.
     fn select(&mut self, flight: FlightId, model: &Model) -> Option<String>;
@@ -76,15 +75,15 @@ pub trait CrewSelectionStrategy {
 }
 
 pub struct Dispatcher {
-    model: Arc<Model>,
-    aircraft_selector: Option<Box<dyn AircraftSelectionStrategy>>,
-    crew_selector: Option<Box<dyn CrewSelectionStrategy>>,
-    wait_for_deadheaders: bool,
+    pub model: Arc<Model>,
+    pub aircraft_selector: Option<Box<dyn AircraftSelectionStrategy>>,
+    pub crew_selector: Option<Box<dyn CrewSelectionStrategy>>,
+    pub wait_for_deadheaders: bool,
 
-    aircraft_tolerance_before_reassign: TimeDelta,
-    crew_tolerance_before_reassign: TimeDelta,
+    pub aircraft_tolerance_before_reassign: TimeDelta,
+    pub crew_tolerance_before_reassign: TimeDelta,
 
-    update_queue: BinaryHeap<DispatcherUpdate>,
+    pub update_queue: BinaryHeap<DispatcherUpdate>,
 }
 
 macro_rules! send_event {
@@ -92,7 +91,7 @@ macro_rules! send_event {
         $self
             .publisher
             .send(ModelEvent {
-                time: $self.now,
+                time: $self.now(),
                 data: $ev,
             })
             .expect("Metrics collector dropped");
@@ -100,6 +99,40 @@ macro_rules! send_event {
 }
 
 impl Dispatcher {
+    /// Enqueue all upcoming flights for `CheckDepart`.
+    pub fn init_flight_updates(&mut self) {
+        for flight in self.model.flights.values() {
+            let flight = flight.read().unwrap();
+            self.update_queue.push(DispatcherUpdate {
+                time: flight.sched_depart,
+                flight: flight.id,
+                _type: UpdateType::CheckDepart,
+            });
+        }
+    }
+
+    /// Run the entire network model by successively processing updates
+    /// and sending out ModelEvents.
+    ///
+    /// Note: Since `run_model` updates `model._now`, it must borrow the model
+    /// mutably.
+    pub fn run_model(&mut self) {
+        send_event!(
+            self.model,
+            ModelEventType::SimulationStarted(Arc::downgrade(&self.model))
+        );
+
+        while let Some(update) = self.update_queue.pop() {
+            assert!(self.model.now() <= update.time);
+            {
+                *self.model._now.write().unwrap() = update.time;
+            }
+            assert!(self.model.now() == update.time);
+            self.update_flight(update);
+        }
+
+        send_event!(self.model, ModelEventType::SimulationComplete);
+    }
     /// Check the status of the given `flight`.
     /// If possible, move its progress forward.
     ///
@@ -114,13 +147,12 @@ impl Dispatcher {
     ///   - The scheduled time enroute has elapsed since departure
     ///   - Landing clearance is given by all Disruptions
     pub fn update_flight(&mut self, update: DispatcherUpdate) {
-        let model = &self.model;
         match update._type {
             UpdateType::CheckDepart => {
                 {
-                    let flt = model.flight_write(update.flight);
+                    let flt = self.model.flight_write(update.flight);
                     // Has the scheduled departure time been reached?
-                    if flt.sched_depart > model.now {
+                    if flt.sched_depart > self.model.now() {
                         self.update_queue.push(DispatcherUpdate {
                             flight: update.flight,
                             time: flt.sched_depart,
@@ -131,97 +163,92 @@ impl Dispatcher {
                 }
                 // Is the assigned aircraft available?
                 {
-                    let mut flt = model.flight_write(update.flight);
-                    let aircraft = model.fleet.get(&flt.aircraft_tail).unwrap().read().unwrap();
-                    let ac_avail = aircraft.available_time(&*model, flt.origin);
+                    let mut flt = self.model.flight_write(update.flight);
+                    let aircraft = self
+                        .model
+                        .fleet
+                        .get(&flt.aircraft_tail)
+                        .unwrap()
+                        .read()
+                        .unwrap();
+                    let ac_avail = aircraft.available_time(&*self.model, flt.origin);
                     if ac_avail
-                        .map(|d| d > model.now + self.aircraft_tolerance_before_reassign)
+                        .map(|d| d > self.model.now() + self.aircraft_tolerance_before_reassign)
                         .unwrap_or(true)
                     {
                         // Unavailable
                         if let Some(ref mut selector) = &mut self.aircraft_selector {
                             // There is a reassigner
                             send_event!(
-                                model,
+                                self.model,
                                 ModelEventType::AircraftSelection(
                                     flt.id,
                                     flt.aircraft_tail.clone()
                                 )
                             );
-                            if let Some(ac) = selector.deref_mut().select(flt.id, &model) {
+                            if let Some(ac) = selector.deref_mut().select(flt.id, &self.model) {
                                 // Reassignment is given
                                 flt.reassign_aircraft(ac.clone());
                                 send_event!(
-                                    model,
+                                    self.model,
                                     ModelEventType::AircraftAssignmentChanged(flt.id)
                                 );
                                 self.update_queue.push(DispatcherUpdate {
                                     flight: update.flight,
-                                    time: model.now,
+                                    time: self.model.now(),
                                     _type: UpdateType::CheckDepart,
                                 });
                                 return;
                             } else {
                                 // Can only cancel
-                                self.update_queue.push(DispatcherUpdate {
-                                    flight: update.flight,
-                                    time: model.now,
-                                    _type: UpdateType::Cancel,
-                                });
+                                self.model.cancel_flight(
+                                    update.flight,
+                                    CancelReason::HeavyExpectedDelay(DelayReason::AircraftShortage),
+                                );
                                 return;
                             }
                         } else {
                             // Can't deviate, must wait
-                            send_event!(
-                                model,
-                                ModelEventType::FlightDepartureDelayed(
-                                    update.flight,
-                                    RESOURCE_WAIT,
-                                    DelayReason::AircraftShortage
-                                )
+                            Self::delay_departure(
+                                self.model.now(),
+                                &self.model,
+                                update.flight,
+                                RESOURCE_WAIT,
+                                DelayReason::AircraftShortage,
+                                &mut self.update_queue,
                             );
-                            self.update_queue.push(DispatcherUpdate {
-                                flight: update.flight,
-                                time: model.now + RESOURCE_WAIT,
-                                _type: UpdateType::CheckDepart,
-                            });
                             return;
                         }
-                    } else if ac_avail.unwrap() > model.now {
+                    } else if ac_avail.unwrap() > self.model.now() {
                         // Delay within tolerance
-                        send_event!(
-                            model,
-                            ModelEventType::FlightDepartureDelayed(
-                                update.flight,
-                                ac_avail.unwrap() - model.now,
-                                DelayReason::AircraftShortage
-                            )
+                        Self::delay_departure(
+                            self.model.now(),
+                            &self.model,
+                            update.flight,
+                            ac_avail.unwrap() - self.model.now(),
+                            DelayReason::AircraftShortage,
+                            &mut self.update_queue,
                         );
-                        self.update_queue.push(DispatcherUpdate {
-                            flight: update.flight,
-                            time: ac_avail.unwrap(),
-                            _type: UpdateType::CheckDepart,
-                        });
                         return;
                     }
                 }
                 // TODO reduce duplication somehow, maybe by unifying Crew and Aircraft under a trait "Resource"
                 // Is all the assigned crew available?
                 {
-                    let mut flt = model.flight_write(update.flight);
+                    let mut flt = self.model.flight_write(update.flight);
                     let unavailable_crew = flt
                         .crew
                         .iter()
                         .map(|id| {
                             (
                                 *id,
-                                model
+                                self.model
                                     .crew
                                     .get(id)
                                     .unwrap()
                                     .read()
                                     .unwrap()
-                                    .time_until_available_for(&flt, model.now),
+                                    .time_until_available_for(&flt, self.model.now(), &self.model),
                             )
                         })
                         .collect::<Vec<_>>();
@@ -243,44 +270,42 @@ impl Dispatcher {
                     if !needs_reassignment.is_empty() {
                         if let Some(ref mut selector) = &mut self.crew_selector {
                             send_event!(
-                                model,
+                                self.model,
                                 ModelEventType::CrewSelection(flt.id, needs_reassignment.clone())
                             );
-                            if let Some(crews) = selector.select(flt.id, &model, needs_reassignment)
+                            if let Some(crews) =
+                                selector.select(flt.id, &self.model, needs_reassignment)
                             {
                                 // Reassignment made
                                 flt.reassign_crew(crews);
-                                send_event!(model, ModelEventType::CrewAssignmentChanged(flt.id));
+                                send_event!(
+                                    self.model,
+                                    ModelEventType::CrewAssignmentChanged(flt.id)
+                                );
                                 self.update_queue.push(DispatcherUpdate {
                                     flight: update.flight,
-                                    time: model.now,
+                                    time: self.model.now(),
                                     _type: UpdateType::CheckDepart,
                                 });
                                 return;
                             } else {
                                 // No reassignment, must cancel
-                                self.update_queue.push(DispatcherUpdate {
-                                    flight: update.flight,
-                                    time: model.now,
-                                    _type: UpdateType::Cancel,
-                                });
+                                self.model.cancel_flight(
+                                    update.flight,
+                                    CancelReason::HeavyExpectedDelay(DelayReason::CrewShortage),
+                                );
                                 return;
                             }
                         } else {
                             // No crew selector, just wait
-                            send_event!(
-                                model,
-                                ModelEventType::FlightDepartureDelayed(
-                                    update.flight,
-                                    RESOURCE_WAIT,
-                                    DelayReason::CrewShortage
-                                )
+                            Self::delay_departure(
+                                self.model.now(),
+                                &self.model,
+                                update.flight,
+                                RESOURCE_WAIT,
+                                DelayReason::CrewShortage,
+                                &mut self.update_queue,
                             );
-                            self.update_queue.push(DispatcherUpdate {
-                                flight: update.flight,
-                                time: model.now + RESOURCE_WAIT,
-                                _type: UpdateType::CheckDepart,
-                            });
                             return;
                         }
                     } else {
@@ -290,19 +315,14 @@ impl Dispatcher {
                             .max()
                             .unwrap();
                         if max_wait > TimeDelta::zero() {
-                            send_event!(
-                                model,
-                                ModelEventType::FlightDepartureDelayed(
-                                    update.flight,
-                                    max_wait,
-                                    DelayReason::CrewShortage
-                                )
+                            Self::delay_departure(
+                                self.model.now(),
+                                &self.model,
+                                update.flight,
+                                max_wait,
+                                DelayReason::CrewShortage,
+                                &mut self.update_queue,
                             );
-                            self.update_queue.push(DispatcherUpdate {
-                                flight: update.flight,
-                                time: model.now + max_wait,
-                                _type: UpdateType::CheckDepart,
-                            });
                             return;
                         }
                     }
@@ -317,65 +337,55 @@ impl Dispatcher {
                 }
                 // Are disruptions preventing this flight from taking off?
                 {
-                    let (clear, disruption) = model.request_departure(update.flight);
+                    let (clear, disruption) = self.model.request_departure(update.flight);
                     if let Some(later) = clear.time() {
                         // Disruption delayed the flight
-                        send_event!(
-                            model,
-                            ModelEventType::FlightDepartureDelayed(
-                                update.flight,
-                                *later - model.now,
-                                DelayReason::Disrupted(Arc::downgrade(&disruption.unwrap()))
-                            )
+                        Self::delay_departure(
+                            self.model.now(),
+                            &self.model,
+                            update.flight,
+                            *later - self.model.now(),
+                            DelayReason::Disrupted(disruption.unwrap().read().unwrap().describe()),
+                            &mut self.update_queue,
                         );
-                        self.update_queue.push(DispatcherUpdate {
-                            flight: update.flight,
-                            time: *later,
-                            _type: UpdateType::CheckDepart,
-                        });
                         return;
                     }
                 }
                 let origin = {
-                    let origin = model.flight_read(update.flight).origin;
+                    let origin = self.model.flight_read(update.flight).origin;
                     origin
                 };
                 // When can the origin airport handle this departure?
                 {
-                    let arpt = model.airports.get(&origin).unwrap().read().unwrap();
-                    let airport_depart_time = arpt.depart_time(model.now);
-                    if airport_depart_time > model.now {
-                        send_event!(
-                            model,
-                            ModelEventType::FlightDepartureDelayed(
-                                update.flight,
-                                airport_depart_time - model.now,
-                                DelayReason::RateLimited(origin)
-                            )
+                    let arpt = self.model.airports.get(&origin).unwrap().read().unwrap();
+                    let airport_depart_time = arpt.depart_time(self.model.now());
+                    if airport_depart_time > self.model.now() {
+                        Self::delay_departure(
+                            self.model.now(),
+                            &self.model,
+                            update.flight,
+                            airport_depart_time - self.model.now(),
+                            DelayReason::RateLimited(origin),
+                            &mut self.update_queue,
                         );
-                        self.update_queue.push(DispatcherUpdate {
-                            flight: update.flight,
-                            time: airport_depart_time,
-                            _type: UpdateType::CheckDepart,
-                        });
                         return;
                     }
                 }
                 // Everything is available
-                model.depart_flight(update.flight);
-                let arrive_time = model.flight_read(update.flight).act_arrive_time();
+                self.model.depart_flight(update.flight);
+                let arrive_time = self.model.flight_read(update.flight).act_arrive_time();
                 self.update_queue.push(DispatcherUpdate {
                     flight: update.flight,
                     time: arrive_time,
-                    _type: UpdateType::CheckArrive
+                    _type: UpdateType::CheckArrive,
                 });
             }
             UpdateType::CheckArrive => {
                 // Has the flight time elapsed since departure?
                 {
-                    let flt = model.flight_read(update.flight);
+                    let flt = self.model.flight_read(update.flight);
                     let arrive_time = flt.act_arrive_time();
-                    if arrive_time > model.now {
+                    if arrive_time > self.model.now() {
                         // Too soon!
                         self.update_queue.push(DispatcherUpdate {
                             flight: update.flight,
@@ -387,14 +397,16 @@ impl Dispatcher {
                 }
                 // Is the arrival blocked by a disruption?
                 {
-                    let (clearance, disruption) = model.request_arrival(update.flight);
+                    let (clearance, disruption) = self.model.request_arrival(update.flight);
                     if let Some(time) = clearance.time() {
                         send_event!(
-                            model,
+                            self.model,
                             ModelEventType::FlightArrivalDelayed(
                                 update.flight,
-                                *time - model.now,
-                                DelayReason::Disrupted(Arc::downgrade(&disruption.unwrap()))
+                                *time - self.model.now(),
+                                DelayReason::Disrupted(
+                                    disruption.unwrap().read().unwrap().describe()
+                                )
                             )
                         );
                         self.update_queue.push(DispatcherUpdate {
@@ -407,15 +419,15 @@ impl Dispatcher {
                 }
                 // Can the destination airport accommodate the arrival?
                 {
-                    let dest = model.flight_read(update.flight).dest;
-                    let dest_airport = model.airports.get(&dest).unwrap().read().unwrap();
-                    let arrive_time = dest_airport.arrive_time(model.now);
-                    if arrive_time > model.now {
+                    let dest = self.model.flight_read(update.flight).dest;
+                    let dest_airport = self.model.airports.get(&dest).unwrap().read().unwrap();
+                    let arrive_time = dest_airport.arrive_time(self.model.now());
+                    if arrive_time > self.model.now() {
                         send_event!(
-                            model,
+                            self.model,
                             ModelEventType::FlightArrivalDelayed(
                                 update.flight,
-                                arrive_time - model.now,
+                                arrive_time - self.model.now(),
                                 DelayReason::RateLimited(dest)
                             )
                         );
@@ -427,11 +439,73 @@ impl Dispatcher {
                         return;
                     }
                 }
-                model.arrive_flight(update.flight);
+                self.model.arrive_flight(update.flight);
             }
-            UpdateType::Cancel => {
-                model.cancel_flight(update.flight);
+        }
+    }
+
+    fn delay_departure(
+        now: DateTime<Utc>,
+        model: &Model,
+        id: FlightId,
+        duration: TimeDelta,
+        reason: DelayReason,
+        queue: &mut BinaryHeap<DispatcherUpdate>,
+    ) {
+        {
+            let sched_depart = model.flight_read(id).sched_depart;
+            if now + duration > sched_depart + model.config.max_delay {
+                // Exceeding max delay, need to cancel
+                model.cancel_flight(id, CancelReason::DelayTimedOut);
+                return;
             }
+        }
+        send_event!(
+            model,
+            ModelEventType::FlightDepartureDelayed(id, duration, reason)
+        );
+        queue.push(DispatcherUpdate {
+            flight: id,
+            time: now + duration,
+            _type: UpdateType::CheckDepart,
+        });
+    }
+}
+
+// MARK: Strategies
+
+pub mod strategies {
+    use super::*;
+
+    struct GiveUpAircraftSelectionStrategy {}
+    impl AircraftSelectionStrategy for GiveUpAircraftSelectionStrategy {
+        fn select(&mut self, flight: FlightId, model: &Model) -> Option<String> {
+            None
+        }
+    }
+
+    struct GiveUpCrewSelectionStrategy {}
+    impl CrewSelectionStrategy for GiveUpCrewSelectionStrategy {
+        fn select(
+            &mut self,
+            flight: FlightId,
+            model: &Model,
+            unavailable_crew: Vec<CrewId>,
+        ) -> Option<Vec<CrewId>> {
+            None
+        }
+    }
+
+    pub fn new_for_aircraft(key: &str) -> Box<dyn AircraftSelectionStrategy> {
+        match key {
+            "giveup" => Box::new(GiveUpAircraftSelectionStrategy {}),
+            _ => unimplemented!("aircraft selection strategy {:?}", key),
+        }
+    }
+    pub fn new_for_crew(key: &str) -> Box<dyn CrewSelectionStrategy> {
+        match key {
+            "giveup" => Box::new(GiveUpCrewSelectionStrategy {}),
+            _ => unimplemented!("crew selection strategy {:?}", key),
         }
     }
 }

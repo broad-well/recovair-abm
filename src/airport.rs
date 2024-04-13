@@ -1,7 +1,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
-    cmp::Ordering,
-    collections::LinkedList,
+    cmp::{max, min, Ordering},
+    collections::HashSet,
     rc::Weak,
     sync::{Arc, RwLock, RwLockReadGuard},
 };
@@ -16,15 +16,15 @@ pub type AirportCode = [u8; 3];
 #[derive(Debug)]
 pub struct Airport {
     pub code: AirportCode,
-    pub fleet: LinkedList<String>,
-    pub crew: LinkedList<CrewId>,
+    pub fleet: HashSet<String>,
+    pub crew: HashSet<CrewId>,
     // TODO consolidate demand path
-    pub passengers: LinkedList<PassengerDemand>,
+    pub passengers: Vec<PassengerDemand>,
 
     pub max_dep_per_hour: u32,
     pub max_arr_per_hour: u32,
-    departure_count: (DateTime<Utc>, u32),
-    arrival_count: (DateTime<Utc>, u32),
+    pub departure_count: (DateTime<Utc>, u32),
+    pub arrival_count: (DateTime<Utc>, u32),
 }
 
 impl Airport {
@@ -41,12 +41,15 @@ impl Airport {
         }
     }
 
-    pub fn mark_departure(&mut self, time: DateTime<Utc>) {
+    pub fn mark_departure(&mut self, time: DateTime<Utc>, flight: &mut Flight, capacity: u16) {
         if time - self.departure_count.0 >= TimeDelta::hours(1) {
             self.departure_count = (time, 1);
         } else {
-            self.departure_count.1 += 1
+            self.departure_count.1 += 1;
         }
+        assert!(self.fleet.remove(&flight.aircraft_tail));
+        self.crew.retain(|c| !flight.crew.contains(c));
+        self.deduct_passengers(flight.dest, capacity, &mut flight.passengers);
     }
 
     // TODO reduce duplication
@@ -63,19 +66,70 @@ impl Airport {
         }
     }
 
-    pub fn mark_arrival(&mut self, time: DateTime<Utc>) {
+    pub fn mark_arrival(&mut self, time: DateTime<Utc>, flight: &Flight) {
         if time - self.arrival_count.0 >= TimeDelta::hours(1) {
             self.arrival_count = (time, 1);
         } else {
-            self.arrival_count.1 += 1
+            self.arrival_count.1 += 1;
         }
+        self.fleet.insert(flight.aircraft_tail.clone());
+        self.crew.extend(flight.crew.iter());
+        self.accept_passengers(&flight.passengers);
+    }
+
+    fn deduct_passengers(
+        &mut self,
+        dest: AirportCode,
+        mut capacity: u16,
+        onboard: &mut Vec<PassengerDemand>,
+    ) {
+        // TODO figure out which ones to prioritize
+        for demand in &mut self.passengers {
+            if demand.next_dest(self.code) != Some(dest) {
+                continue;
+            }
+            let taking = min(demand.count, capacity as u32);
+            onboard.push(demand.split_off(taking));
+            capacity -= taking as u16;
+            if capacity == 0 {
+                return;
+            }
+        }
+        self.passengers.retain(|demand| demand.count > 0);
+    }
+
+    fn accept_passengers(&mut self, onboard: &[PassengerDemand]) {
+        self.passengers.extend(
+            onboard
+                .iter()
+                .filter(|demand| *demand.path.last().unwrap() != self.code)
+                .map(|d| d.clone()),
+        );
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PassengerDemand {
     pub path: Vec<AirportCode>,
     pub count: u32,
+}
+
+impl PassengerDemand {
+    pub fn next_dest(&self, now: AirportCode) -> Option<AirportCode> {
+        self.path
+            .iter()
+            .skip_while(|code| **code != now)
+            .next()
+            .map(|i| *i)
+    }
+
+    pub fn split_off(&mut self, count: u32) -> PassengerDemand {
+        self.count -= count;
+        PassengerDemand {
+            path: self.path.clone(),
+            count,
+        }
+    }
 }
 
 // MARK: Disruptions
@@ -131,11 +185,11 @@ impl PartialOrd for Clearance {
     }
 }
 
-pub trait Disruption: std::fmt::Debug {
+pub trait Disruption: std::fmt::Debug + Send + Sync {
     /// By design, we should call this AFTER ensuring that all the resources are present for the flight
     /// (aircraft, crew, passengers)
-    fn request_depart(&mut self, flight: RwLockReadGuard<'_, Flight>) -> Clearance;
-    fn request_arrive(&mut self, _flight: RwLockReadGuard<'_, Flight>) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance;
+    fn request_arrive(&mut self, _flight: &Flight, model: &Model) -> Clearance {
         Clearance::Cleared
     }
 
@@ -198,7 +252,6 @@ pub struct GroundDelayProgram {
     // Room to add origin ARTCCs
     pub slots: SlotManager<FlightId>,
     pub reason: Option<String>,
-    model: Weak<Model>,
 }
 
 impl GroundDelayProgram {
@@ -213,11 +266,11 @@ impl GroundDelayProgram {
 }
 
 impl Disruption for GroundDelayProgram {
-    fn request_depart(&mut self, flight: RwLockReadGuard<'_, Flight>) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance {
         if flight.dest != self.site {
             return Clearance::Cleared;
         }
-        let arrive = flight.est_arrive_time(&self.model.upgrade().unwrap().now);
+        let arrive = flight.est_arrive_time(&model.now());
         if !self.slots.contains(&arrive) {
             return Clearance::Cleared;
         }
@@ -260,21 +313,20 @@ pub struct DepartureRateLimit {
     site: AirportCode,
     slots: SlotManager<FlightId>,
     reason: Option<String>,
-    model: Arc<Model>,
 }
 
 impl Disruption for DepartureRateLimit {
-    fn request_depart(&mut self, flight: RwLockReadGuard<'_, Flight>) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance {
         if flight.origin != self.site {
             return Clearance::Cleared;
         }
-        if !self.slots.contains(&self.model.now) {
+        if !self.slots.contains(&model.now()) {
             return Clearance::Cleared;
         }
 
-        if self.slots.slotted_at(&self.model.now, &flight.id) {
+        if self.slots.slotted_at(&model.now(), &flight.id) {
             Clearance::Cleared
-        } else if let Some(edct) = self.slots.allocate_slot(&self.model.now, flight.id) {
+        } else if let Some(edct) = self.slots.allocate_slot(&model.now(), flight.id) {
             Clearance::EDCT(edct)
         } else {
             Clearance::Deferred(self.slots.end)

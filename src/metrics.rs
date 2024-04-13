@@ -1,4 +1,8 @@
-use std::sync::{Arc, RwLock, Weak};
+use std::{
+    path::Path,
+    sync::{mpsc, Arc, RwLock, Weak},
+    thread::{self, JoinHandle, Thread},
+};
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -18,17 +22,24 @@ pub struct ModelEvent {
 pub enum DelayReason {
     CrewShortage,
     AircraftShortage,
-    Disrupted(Weak<RwLock<dyn Disruption>>),
+    Disrupted(String),
     RateLimited(AirportCode),
 }
 
 #[derive(Debug, Clone)]
+pub enum CancelReason {
+    HeavyExpectedDelay(DelayReason),
+    DelayTimedOut,
+}
+
+#[derive(Debug, Clone)]
 pub enum ModelEventType {
+    SimulationStarted(Weak<Model>),
     // -- Flight lifecycle --
     // Sender: Dispatcher
     // (A Flight object does not change once arrived)
     FlightDepartureDelayed(FlightId, Duration, DelayReason),
-    FlightCancelled(FlightId),
+    FlightCancelled(FlightId, CancelReason),
     FlightDeparted(FlightId),
     FlightArrivalDelayed(FlightId, Duration, DelayReason),
     FlightArrived(FlightId),
@@ -49,4 +60,50 @@ pub enum ModelEventType {
 
     // -- Completion --
     SimulationComplete,
+}
+
+pub struct MetricsProcessor {
+    receiver: mpsc::Receiver<ModelEvent>,
+    model: Weak<Model>,
+    // more memory needed to compute KPIs
+}
+
+pub struct MetricsReport {
+    location: Path,
+}
+
+impl MetricsProcessor {
+    pub fn new(receiver: mpsc::Receiver<ModelEvent>) -> JoinHandle<()> {
+        let mut proc = Self {
+            receiver,
+            model: Weak::new(),
+        };
+        thread::spawn(move || proc.run())
+    }
+
+    fn run(&mut self) {
+        for event in self.receiver.iter() {
+            match event.data {
+                ModelEventType::SimulationComplete => {
+                    // TODO write data
+                    break;
+                }
+                ModelEventType::SimulationStarted(model) => {
+                    self.model = model;
+                }
+                _ => {
+                    println!(
+                        "[{}] {:?} ({})",
+                        event.time,
+                        event.data,
+                        if self.model.upgrade().is_some() {
+                            "model exists"
+                        } else {
+                            "model not found"
+                        }
+                    );
+                }
+            }
+        }
+    }
 }

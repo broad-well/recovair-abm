@@ -1,9 +1,18 @@
 [package]
 name = "recovair-abm"
 version = "0.1.0"
+description = "Agent-based airline network model for disruption recovery decision-making"
+authors = ["Michael Peng <mipeng@umich.edu>"]
+license = "MIT"
 edition = "2021"
+exclude = ["index.node"]
+
+[lib]
+crate-type = ["cdylib"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 chrono = "0.4.37"
+rusqlite = "0.31.0"
+neon = "1"

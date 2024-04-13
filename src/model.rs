@@ -2,7 +2,7 @@ use crate::{
     aircraft::{Aircraft, Flight, FlightId},
     airport::{Airport, AirportCode, Clearance, Disruption},
     crew::{Crew, CrewId},
-    metrics::{ModelEvent, ModelEventType},
+    metrics::{CancelReason, DelayReason, MetricsProcessor, ModelEvent, ModelEventType},
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     rc::Weak,
     sync::{mpsc, Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
-    thread::Thread,
+    thread::{JoinHandle, Thread},
 };
 
 #[derive(Debug)]
@@ -21,7 +21,7 @@ pub struct ModelConfig {
 }
 
 pub struct Model {
-    pub now: DateTime<Utc>,
+    pub _now: Arc<RwLock<DateTime<Utc>>>,
     pub fleet: HashMap<String, Arc<RwLock<Aircraft>>>,
     pub crew: HashMap<CrewId, Arc<RwLock<Crew>>>,
     pub airports: HashMap<AirportCode, Arc<RwLock<Airport>>>,
@@ -29,7 +29,7 @@ pub struct Model {
     pub disruptions: Vec<Arc<RwLock<dyn Disruption>>>,
     pub publisher: mpsc::Sender<ModelEvent>,
 
-    pub metrics_thread: Thread,
+    pub metrics: RwLock<Option<JoinHandle<()>>>,
     pub config: ModelConfig,
 }
 
@@ -41,7 +41,7 @@ macro_rules! send_event {
         $self
             .publisher
             .send(ModelEvent {
-                time: $self.now,
+                time: $self.now(),
                 data: $ev,
             })
             .expect("Metrics collector dropped");
@@ -49,6 +49,10 @@ macro_rules! send_event {
 }
 
 impl Model {
+    pub fn now(&self) -> DateTime<Utc> {
+        self._now.read().unwrap().clone()
+    }
+
     pub fn flight_write(&self, id: FlightId) -> RwLockWriteGuard<'_, Flight> {
         self.flights.get(&id).unwrap().write().unwrap()
     }
@@ -58,23 +62,16 @@ impl Model {
 
     /// Make the given flight depart from its origin, i.e., transition from Scheduled to Enroute.
     pub fn depart_flight(&self, flight_id: FlightId) {
-        let now = self.now;
-        {
-            let mut flight = self.flight_write(flight_id);
-            flight.takeoff(now);
-        }
-        let flight = self.flights.get(&flight_id).unwrap().read().unwrap();
-        {
-            let mut aircraft = self
-                .fleet
-                .get(&flight.aircraft_tail)
-                .unwrap()
-                .write()
-                .unwrap();
-            // This sends AircraftTurnedAround
-            send_event!(self, aircraft.takeoff(flight_id, self.now));
-        }
-        let flight = self.flights.get(&flight_id).unwrap().read().unwrap();
+        let now = self.now();
+        let mut flight = self.flights.get(&flight_id).unwrap().write().unwrap();
+        let mut aircraft = self
+            .fleet
+            .get(&flight.aircraft_tail)
+            .unwrap()
+            .write()
+            .unwrap();
+        // This sends AircraftTurnedAround
+        send_event!(self, aircraft.takeoff(flight_id, self.now()));
         for crew_id in &flight.crew {
             self.crew
                 .get(crew_id)
@@ -83,22 +80,22 @@ impl Model {
                 .unwrap()
                 .takeoff(&flight);
         }
-        {
-            let mut origin = self.airports.get(&flight.origin).unwrap().write().unwrap();
-            origin.mark_departure(self.now);
-        }
+        flight.takeoff(now);
+        let aircraft = self
+            .fleet
+            .get(&flight.aircraft_tail)
+            .unwrap()
+            .read()
+            .unwrap();
+        let mut origin = self.airports.get(&flight.origin).unwrap().write().unwrap();
+        origin.mark_departure(self.now(), &mut flight, aircraft.type_.1);
         send_event!(self, ModelEventType::FlightDeparted(flight_id));
     }
 
     /// Make the given flight arrive at its destination, i.e., transition from Enroute to Scheduled.
     pub fn arrive_flight(&self, flight_id: FlightId) {
         // Update: Flight, resources (Aircraft, Crew)
-        {
-            let mut flight = self.flight_write(flight_id);
-            flight.land(self.now);
-        }
-
-        let flight = self.flights.get(&flight_id).unwrap().read().unwrap();
+        let mut flight = self.flights.get(&flight_id).unwrap().write().unwrap();
         {
             let mut aircraft = self
                 .fleet
@@ -106,7 +103,7 @@ impl Model {
                 .unwrap()
                 .write()
                 .unwrap();
-            aircraft.land(flight.dest, self.now);
+            aircraft.land(flight.dest, self.now());
         }
         for crew_id in &flight.crew {
             self.crew
@@ -114,19 +111,20 @@ impl Model {
                 .unwrap()
                 .write()
                 .unwrap()
-                .land(&flight, self.now);
+                .land(&flight, self.now());
         }
         {
+            flight.land(self.now());
             let mut dest = self.airports.get(&flight.dest).unwrap().write().unwrap();
-            dest.mark_arrival(self.now);
+            dest.mark_arrival(self.now(), &flight);
         }
         send_event!(self, ModelEventType::FlightArrived(flight_id))
     }
 
-    pub fn cancel_flight(&self, flight_id: FlightId) {
+    pub fn cancel_flight(&self, flight_id: FlightId, reason: CancelReason) {
         let mut flt = self.flight_write(flight_id);
         flt.cancelled = true;
-        send_event!(self, ModelEventType::FlightCancelled(flight_id));
+        send_event!(self, ModelEventType::FlightCancelled(flight_id, reason));
     }
 
     pub fn request_departure(
@@ -143,7 +141,7 @@ impl Model {
                     disruption
                         .write()
                         .unwrap()
-                        .request_depart(flt.read().unwrap()),
+                        .request_depart(&flt.read().unwrap(), self),
                 )
             })
             .max_by(|a, b| a.1.cmp(&b.1));
@@ -170,7 +168,7 @@ impl Model {
                     disruption
                         .write()
                         .unwrap()
-                        .request_arrive(flt.read().unwrap()),
+                        .request_arrive(&flt.read().unwrap(), self),
                 )
             })
             .max_by(|a, b| a.1.cmp(&b.1));
@@ -187,7 +185,7 @@ impl std::fmt::Debug for Model {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "Model {{ now={}, {} aircraft, {} crew, {} airports, {} disruptions }}",
-            self.now,
+            self.now(),
             self.fleet.len(),
             self.crew.len(),
             self.airports.len(),

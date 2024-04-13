@@ -1,7 +1,7 @@
 use crate::crew::CrewId;
 use crate::model::Model;
 use crate::{airport::*, metrics::ModelEventType};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 
 pub type FlightId = u64;
 
@@ -85,13 +85,27 @@ pub enum Location {
 
 #[derive(Debug)]
 pub struct Aircraft {
-    tail: String,
-    location: Location,
+    pub tail: String,
+    pub location: Location,
     /// (Name, passenger capacity)
-    type_: (String, u16),
+    pub type_: (String, u16),
 }
 
 impl Aircraft {
+    pub fn new(
+        tail: String,
+        location: AirportCode,
+        now: &DateTime<Utc>,
+        typename: String,
+        capacity: u16,
+    ) -> Self {
+        Aircraft {
+            tail,
+            location: Location::Ground(location, *now - TimeDelta::hours(2)),
+            type_: (typename, capacity),
+        }
+    }
+
     pub fn takeoff(&mut self, flight_id: FlightId, time: DateTime<Utc>) -> ModelEventType {
         let Location::Ground(airport, since) = self.location else {
             panic!("takeoff() called when aircraft in the air")
