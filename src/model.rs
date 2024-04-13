@@ -79,12 +79,6 @@ impl Model {
                 .takeoff(&flight);
         }
         flight.takeoff(now);
-        let aircraft = self
-            .fleet
-            .get(&flight.aircraft_tail)
-            .unwrap()
-            .read()
-            .unwrap();
         let mut origin = self.airports.get(&flight.origin).unwrap().write().unwrap();
         origin.mark_departure(self.now(), &mut flight, aircraft.type_.1);
         send_event!(self, ModelEventType::FlightDeparted(flight_id));

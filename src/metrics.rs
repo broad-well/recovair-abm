@@ -45,7 +45,7 @@ pub enum ModelEventType {
 
     // -- Scheduled changes --
     // Sender: Dispatcher
-    CrewAssignmentChanged(FlightId),
+    CrewAssignmentChanged(FlightId, Vec<CrewId>),
     AircraftAssignmentChanged(FlightId),
 
     // -- Decision points --
@@ -77,7 +77,11 @@ impl MetricsProcessor {
     }
 
     fn run(&mut self) {
-        for event in self.receiver.iter() {
+        loop {
+            let Ok(event) = self.receiver.recv() else {
+                println!("metrics thread failed to receive event");
+                return;
+            };
             match event.data {
                 ModelEventType::SimulationComplete => {
                     // TODO write data
@@ -86,17 +90,13 @@ impl MetricsProcessor {
                 ModelEventType::SimulationStarted(model) => {
                     self.model = model;
                 }
+                ModelEventType::FlightArrived(id) => {
+                    let mdl = self.model.upgrade().unwrap();
+                    let flt = mdl.flight_read(id);
+                    println!("[{}] {:?} (with {} passengers)", event.time, event.data, flt.passengers.iter().map(|i| i.count).sum::<u32>());
+                }
                 _ => {
-                    println!(
-                        "[{}] {:?} ({})",
-                        event.time,
-                        event.data,
-                        if self.model.upgrade().is_some() {
-                            "model exists"
-                        } else {
-                            "model not found"
-                        }
-                    );
+                    println!("[{}] {:?}", event.time, event.data);
                 }
             }
         }

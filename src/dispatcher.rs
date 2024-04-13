@@ -205,6 +205,7 @@ impl Dispatcher {
                             }
                         } else {
                             // Can't deviate, must wait
+                            drop(flt);
                             Self::delay_departure(
                                 self.model.now(),
                                 &self.model,
@@ -217,6 +218,7 @@ impl Dispatcher {
                         }
                     } else if ac_avail.unwrap() > self.model.now() {
                         // Delay within tolerance
+                        drop(flt);
                         Self::delay_departure(
                             self.model.now(),
                             &self.model,
@@ -254,6 +256,8 @@ impl Dispatcher {
                     };
                     let critical_crew_set = if self.wait_for_deadheaders {
                         &unavailable_crew[..]
+                    } else if unavailable_crew.is_empty() {
+                        &[]
                     } else {
                         &unavailable_crew[0..1]
                     };
@@ -263,7 +267,7 @@ impl Dispatcher {
                         .filter(|(_, time)| requires_reassignment(&time))
                         .map(|i| i.0)
                         .collect::<Vec<_>>();
-                    if !needs_reassignment.is_empty() {
+                    if !needs_reassignment.is_empty() || flt.crew.is_empty() {
                         if let Some(ref mut selector) = &mut self.crew_selector {
                             send_event!(
                                 self.model,
@@ -273,10 +277,10 @@ impl Dispatcher {
                                 selector.select(flt.id, &self.model, needs_reassignment)
                             {
                                 // Reassignment made
-                                flt.reassign_crew(crews);
+                                flt.reassign_crew(crews.clone());
                                 send_event!(
                                     self.model,
-                                    ModelEventType::CrewAssignmentChanged(flt.id)
+                                    ModelEventType::CrewAssignmentChanged(flt.id, crews)
                                 );
                                 self.update_queue.push(DispatcherUpdate {
                                     flight: update.flight,
@@ -294,11 +298,41 @@ impl Dispatcher {
                             }
                         } else {
                             // No crew selector, just wait
+                            let mut delay_decision = RESOURCE_WAIT;
+                            if flt.crew.is_empty() && !self.model.airports[&flt.origin].read().unwrap().crew.is_empty() {
+                                // Fallback selector: Pick the crew that can take this flight most immediately
+                                let arpt = self.model.airports[&flt.origin].read().unwrap();
+                                let best_crew = arpt.crew.iter()
+                                    .map(|id| {
+                                        let crew = self.model.crew[id].read().unwrap();
+                                        (id, crew.time_until_available_for(&flt, self.model.now(), &self.model))
+                                    })
+                                    .filter(|i| i.1.is_some())
+                                    .map(|i| (i.0, i.1.unwrap()))
+                                    .min_by_key(|i| i.1);
+                                if let Some((best_id, wait_time)) = best_crew {
+                                    flt.reassign_crew(vec![*best_id]);
+                                    send_event!(
+                                        self.model,
+                                        ModelEventType::CrewAssignmentChanged(flt.id, vec![*best_id])
+                                    );
+                                    if wait_time <= TimeDelta::zero() {
+                                        self.update_queue.push(DispatcherUpdate {
+                                            flight: update.flight,
+                                            time: self.model.now(),
+                                            _type: UpdateType::CheckDepart,
+                                        });
+                                        return;
+                                    }
+                                    delay_decision = wait_time;
+                                }
+                            }
+                            drop(flt);
                             Self::delay_departure(
                                 self.model.now(),
                                 &self.model,
                                 update.flight,
-                                RESOURCE_WAIT,
+                                delay_decision,
                                 DelayReason::CrewShortage,
                                 &mut self.update_queue,
                             );
@@ -311,6 +345,7 @@ impl Dispatcher {
                             .max()
                             .unwrap();
                         if max_wait > TimeDelta::zero() {
+                            drop(flt);
                             Self::delay_departure(
                                 self.model.now(),
                                 &self.model,

@@ -37,9 +37,8 @@ impl Crew {
         // formula: did we exceed 10-x hours of flight time
         // in the past 24-x hours, where x is the next flight's duration?
         let flight_duration = flight
-            .arrive_time
-            .unwrap()
-            .signed_duration_since(flight.depart_time.unwrap());
+            .sched_arrive
+            .signed_duration_since(flight.sched_depart);
         let interval_start = &(now - Duration::hours(24) + flight_duration);
         let interval_end = &now;
         let duty_after = self.duty_during(interval_start, interval_end, model) + flight_duration;

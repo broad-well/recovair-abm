@@ -36,6 +36,7 @@ fn run_model(mut cx: FunctionContext) -> JsResult<JsString> {
     let model = Arc::new(try_load!(&mut cx, loader.read_model()));
     let mut dispatcher = try_load!(&mut cx, loader.read_dispatcher(model.clone()));
 
+    dispatcher.init_flight_updates();
     dispatcher.run_model();
     if let Some(handle) = model.metrics.write().unwrap().take() {
         handle.join().expect("Metrics thread failed");

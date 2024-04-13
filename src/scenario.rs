@@ -10,7 +10,7 @@ use rusqlite::Connection;
 
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
-    airport::{Airport, PassengerDemand},
+    airport::{Airport, AirportCode, PassengerDemand},
     crew::{Crew, CrewId},
     dispatcher::{strategies, Dispatcher},
     metrics::MetricsProcessor,
@@ -106,14 +106,6 @@ impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
     }
 }
 
-macro_rules! read_airport_code {
-    ( $row:expr, $key:expr ) => {{
-        let mut code: [u8; 3] = [b'A'; 3];
-        code.clone_from_slice($row.get::<&str, String>($key)?.as_bytes());
-        code
-    }};
-}
-
 impl SqliteScenarioLoader {
     const TIME_FORMAT: &'static str = "%Y-%m-%d %H:%M:%S";
 
@@ -123,7 +115,7 @@ impl SqliteScenarioLoader {
         )?;
         let mut query = stmt.query([&self.id])?;
         while let Some(row) = query.next()? {
-            let code = read_airport_code!(row, "code");
+            let code = AirportCode::from(&row.get("code")?);
             model.airports.insert(
                 code,
                 Arc::new(RwLock::new(Airport {
@@ -148,7 +140,7 @@ impl SqliteScenarioLoader {
         let mut query = stmt.query([&self.id])?;
         while let Some(row) = query.next()? {
             let tail: String = row.get("tail")?;
-            let location = read_airport_code!(row, "location");
+            let location = AirportCode::from(&row.get("location")?);
             model.fleet.insert(
                 tail.clone(),
                 Arc::new(RwLock::new(Aircraft::new(
@@ -175,7 +167,7 @@ impl SqliteScenarioLoader {
         let mut rows = stmt.query([&self.id])?;
         while let Some(row) = rows.next()? {
             let cid: CrewId = row.get("id")?;
-            let location = read_airport_code!(row, "location");
+            let location = AirportCode::from(&row.get("location")?);
             model.crew.insert(
                 cid,
                 Arc::new(RwLock::new(Crew::new(cid, location, model.now()))),
@@ -199,9 +191,12 @@ impl SqliteScenarioLoader {
                 id: flight_id,
                 flight_number: row.get("flight_number")?,
                 aircraft_tail: row.get("aircraft")?,
-                origin: read_airport_code!(row, "origin"),
-                dest: read_airport_code!(row, "dest"),
-                crew: vec![row.get("pilot")?],
+                origin: AirportCode::from(&row.get("origin")?),
+                dest: AirportCode::from(&row.get("dest")?),
+                crew: {
+                    let pilot: Option<CrewId> = row.get("pilot")?;
+                    pilot.map(|i| vec![i]).unwrap_or(Vec::new())
+                },
                 passengers: Vec::new(),
                 cancelled: false,
                 depart_time: None,
@@ -252,11 +247,7 @@ impl SqliteScenarioLoader {
             let demand = PassengerDemand {
                 path: path_str
                     .split('-')
-                    .map(|string| {
-                        let mut buf: [u8; 3] = [b'A'; 3];
-                        buf.clone_from_slice(string.as_bytes());
-                        buf
-                    })
+                    .map(|string| AirportCode::from(&string.to_owned()))
                     .collect(),
                 count: row.get("amount")?,
             };

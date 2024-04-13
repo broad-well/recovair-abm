@@ -2,6 +2,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use std::{
     cmp::{min, Ordering},
     collections::HashSet,
+    fmt::Debug,
 };
 
 use crate::{
@@ -10,7 +11,36 @@ use crate::{
     model::Model,
 };
 
-pub type AirportCode = [u8; 3];
+#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd)]
+pub struct AirportCode {
+    letters: [u8; 3],
+}
+
+impl AirportCode {
+    pub fn from(string: &String) -> Self {
+        let mut ac = Self { letters: [b'A'; 3] };
+        ac.letters.clone_from_slice(string.as_bytes());
+        ac
+    }
+}
+
+impl std::fmt::Debug for AirportCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}{}{}`",
+            self.letters[0] as char, self.letters[1] as char, self.letters[2] as char
+        )?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for AirportCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self, f)
+    }
+}
+
 #[derive(Debug)]
 pub struct Airport {
     pub code: AirportCode,
@@ -117,7 +147,7 @@ impl PassengerDemand {
         self.path
             .iter()
             .skip_while(|code| **code != now)
-            .next()
+            .nth(1)
             .map(|i| *i)
     }
 
@@ -290,7 +320,7 @@ impl Disruption for GroundDelayProgram {
         if let Some(reason) = &self.reason {
             format!(
                 "Ground delay program at {} from {} to {} due to {}",
-                String::from_utf8(self.site.into()).unwrap(),
+                self.site,
                 self.start(),
                 self.end(),
                 reason
@@ -298,7 +328,7 @@ impl Disruption for GroundDelayProgram {
         } else {
             format!(
                 "Ground delay program at {} from {} to {}",
-                String::from_utf8(self.site.into()).unwrap(),
+                self.site,
                 self.start(),
                 self.end()
             )
@@ -334,17 +364,12 @@ impl Disruption for DepartureRateLimit {
         if let Some(reason) = &self.reason {
             format!(
                 "Departure delay program at {} from {} to {} due to {}",
-                String::from_utf8(self.site.into()).unwrap(),
-                self.slots.start,
-                self.slots.end,
-                reason
+                self.site, self.slots.start, self.slots.end, reason
             )
         } else {
             format!(
                 "Departure delay program at {} from {} to {}",
-                String::from_utf8(self.site.into()).unwrap(),
-                self.slots.start,
-                self.slots.end
+                self.site, self.slots.start, self.slots.end
             )
         }
     }
@@ -383,5 +408,20 @@ mod tests {
         assert_eq!(Clearance::Deferred(now), Clearance::Deferred(now));
         assert!(Clearance::EDCT(now) < Clearance::Deferred(now));
         assert!(Clearance::Deferred(now) > Clearance::EDCT(now));
+    }
+
+    #[test]
+    fn psg_demand_next() {
+        let psg = PassengerDemand {
+            count: 200,
+            path: vec![
+                AirportCode::from(&"DEN".to_owned()),
+                AirportCode::from(&"MDW".to_owned()),
+                AirportCode::from(&"BWI".to_owned()),
+            ]
+        };
+        assert_eq!(psg.next_dest(psg.path[0]), Some(psg.path[1]));
+        assert_eq!(psg.next_dest(psg.path[1]), Some(psg.path[2]));
+        assert_eq!(psg.next_dest(psg.path[2]), None);
     }
 }
