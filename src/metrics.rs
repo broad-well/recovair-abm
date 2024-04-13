@@ -1,17 +1,12 @@
 use std::{
     path::Path,
-    sync::{mpsc, Arc, RwLock, Weak},
-    thread::{self, JoinHandle, Thread},
+    sync::{mpsc, Weak},
+    thread::{self, JoinHandle},
 };
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::{
-    aircraft::{Flight, FlightId},
-    airport::{AirportCode, Disruption},
-    crew::CrewId,
-    model::Model,
-};
+use crate::{aircraft::FlightId, airport::AirportCode, crew::CrewId, model::Model};
 
 pub struct ModelEvent {
     pub time: DateTime<Utc>,

@@ -1,14 +1,12 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
-    cmp::{max, min, Ordering},
+    cmp::{min, Ordering},
     collections::HashSet,
-    rc::Weak,
-    sync::{Arc, RwLock, RwLockReadGuard},
 };
 
 use crate::{
-    aircraft::{Aircraft, Flight, FlightId},
-    crew::{Crew, CrewId},
+    aircraft::{Flight, FlightId},
+    crew::CrewId,
     model::Model,
 };
 
@@ -189,7 +187,7 @@ pub trait Disruption: std::fmt::Debug + Send + Sync {
     /// By design, we should call this AFTER ensuring that all the resources are present for the flight
     /// (aircraft, crew, passengers)
     fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance;
-    fn request_arrive(&mut self, _flight: &Flight, model: &Model) -> Clearance {
+    fn request_arrive(&mut self, _flight: &Flight, _model: &Model) -> Clearance {
         Clearance::Cleared
     }
 

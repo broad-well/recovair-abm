@@ -1,7 +1,6 @@
 extern crate chrono;
 use std::sync::Arc;
 
-use dispatcher::Dispatcher;
 use neon::prelude::*;
 use scenario::{ScenarioLoader, SqliteScenarioLoader};
 

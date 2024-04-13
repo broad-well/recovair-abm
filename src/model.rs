@@ -2,15 +2,13 @@ use crate::{
     aircraft::{Aircraft, Flight, FlightId},
     airport::{Airport, AirportCode, Clearance, Disruption},
     crew::{Crew, CrewId},
-    metrics::{CancelReason, DelayReason, MetricsProcessor, ModelEvent, ModelEventType},
+    metrics::{CancelReason, ModelEvent, ModelEventType},
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
-    cell::Cell,
     collections::HashMap,
-    rc::Weak,
     sync::{mpsc, Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
-    thread::{JoinHandle, Thread},
+    thread::JoinHandle,
 };
 
 #[derive(Debug)]

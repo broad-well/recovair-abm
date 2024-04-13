@@ -7,11 +7,7 @@
 //!   - Delay flights if they lack resources
 //!   - Request departure from all `Disruption`s, and follow all delays given
 
-use std::{
-    collections::{BinaryHeap, HashMap},
-    ops::DerefMut,
-    sync::{Arc, RwLock, RwLockReadGuard},
-};
+use std::{collections::BinaryHeap, ops::DerefMut, sync::Arc};
 
 use crate::{
     aircraft::{Flight, FlightId},
@@ -479,7 +475,7 @@ pub mod strategies {
 
     struct GiveUpAircraftSelectionStrategy {}
     impl AircraftSelectionStrategy for GiveUpAircraftSelectionStrategy {
-        fn select(&mut self, flight: FlightId, model: &Model) -> Option<String> {
+        fn select(&mut self, _flight: FlightId, _model: &Model) -> Option<String> {
             None
         }
     }
@@ -488,9 +484,9 @@ pub mod strategies {
     impl CrewSelectionStrategy for GiveUpCrewSelectionStrategy {
         fn select(
             &mut self,
-            flight: FlightId,
-            model: &Model,
-            unavailable_crew: Vec<CrewId>,
+            _flight: FlightId,
+            _model: &Model,
+            _unavailable_crew: Vec<CrewId>,
         ) -> Option<Vec<CrewId>> {
             None
         }
