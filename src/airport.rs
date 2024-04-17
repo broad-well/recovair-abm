@@ -28,7 +28,7 @@ impl std::fmt::Debug for AirportCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "`{}{}{}`",
+            "{}{}{}",
             self.letters[0] as char, self.letters[1] as char, self.letters[2] as char
         )?;
         Ok(())
@@ -75,9 +75,9 @@ impl Airport {
         } else {
             self.departure_count.1 += 1;
         }
-        assert!(self.fleet.remove(&flight.aircraft_tail));
+        debug_assert!(self.fleet.remove(&flight.aircraft_tail));
         self.crew.retain(|c| !flight.crew.contains(c));
-        self.deduct_passengers(flight.dest, capacity, &mut flight.passengers);
+        self.deduct_passengers(flight.id, flight.dest, capacity, &mut flight.passengers);
     }
 
     // TODO reduce duplication
@@ -107,21 +107,26 @@ impl Airport {
 
     fn deduct_passengers(
         &mut self,
+        flight: FlightId,
         dest: AirportCode,
-        mut capacity: u16,
+        capacity: u16,
         onboard: &mut Vec<PassengerDemand>,
     ) {
+        let mut capacity = capacity as i32;
         // TODO figure out which ones to prioritize
         for demand in &mut self.passengers {
+            if capacity <= 0 {
+                break;
+            }
             if demand.next_dest(self.code) != Some(dest) {
                 continue;
             }
             let taking = min(demand.count, capacity as u32);
-            onboard.push(demand.split_off(taking));
-            capacity -= taking as u16;
-            if capacity == 0 {
-                return;
+            if taking == 0 {
+                println!("{} {}", demand.count, capacity);
             }
+            onboard.push(demand.split_off(taking, flight));
+            capacity -= taking as i32;
         }
         self.passengers.retain(|demand| demand.count > 0);
     }
@@ -140,6 +145,7 @@ impl Airport {
 pub struct PassengerDemand {
     pub path: Vec<AirportCode>,
     pub count: u32,
+    pub flights_taken: Vec<FlightId>,
 }
 
 impl PassengerDemand {
@@ -151,11 +157,18 @@ impl PassengerDemand {
             .map(|i| *i)
     }
 
-    pub fn split_off(&mut self, count: u32) -> PassengerDemand {
+    pub fn split_off(&mut self, count: u32, flight: FlightId) -> Self {
+        assert!(count > 0);
         self.count -= count;
-        PassengerDemand {
+        Self {
             path: self.path.clone(),
             count,
+            flights_taken: {
+                let mut copy = Vec::with_capacity(self.flights_taken.len() + 1);
+                copy.extend(self.flights_taken.iter());
+                copy.push(flight);
+                copy
+            }
         }
     }
 }
@@ -197,10 +210,10 @@ impl Ord for Clearance {
                 self_time.cmp(other_time)
             } else if matches!(self, Clearance::EDCT(_)) {
                 // !=, none cleared, time the same
-                assert!(matches!(other, Clearance::Deferred(_)));
+                debug_assert!(matches!(other, Clearance::Deferred(_)));
                 Ordering::Less
             } else {
-                assert!(matches!(other, Clearance::EDCT(_)));
+                debug_assert!(matches!(other, Clearance::EDCT(_)));
                 Ordering::Greater
             }
         }
@@ -233,6 +246,20 @@ pub struct SlotManager<T: PartialEq> {
 }
 
 impl<T: PartialEq> SlotManager<T> {
+    pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, hourly_rate: u16) -> Self {
+        let num_slots = (end - start).num_hours() + 1;
+        let slots_assigned: Vec<Vec<T>> = std::iter::repeat_with(|| Vec::new())
+            .take(num_slots as usize)
+            .collect();
+
+        Self {
+            start,
+            end,
+            slots_assigned,
+            max_slot_size: hourly_rate
+        }
+    }
+
     pub fn slotted_at(&self, time: &DateTime<Utc>, item: &T) -> bool {
         self.slots_assigned[self.time_to_index(time)].contains(item)
     }
@@ -338,9 +365,9 @@ impl Disruption for GroundDelayProgram {
 
 #[derive(Debug)]
 pub struct DepartureRateLimit {
-    site: AirportCode,
-    slots: SlotManager<FlightId>,
-    reason: Option<String>,
+    pub site: AirportCode,
+    pub slots: SlotManager<FlightId>,
+    pub reason: Option<String>,
 }
 
 impl Disruption for DepartureRateLimit {
@@ -418,7 +445,8 @@ mod tests {
                 AirportCode::from(&"DEN".to_owned()),
                 AirportCode::from(&"MDW".to_owned()),
                 AirportCode::from(&"BWI".to_owned()),
-            ]
+            ],
+            flights_taken: Vec::new(),
         };
         assert_eq!(psg.next_dest(psg.path[0]), Some(psg.path[1]));
         assert_eq!(psg.next_dest(psg.path[1]), Some(psg.path[2]));

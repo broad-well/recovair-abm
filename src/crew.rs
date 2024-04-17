@@ -10,9 +10,10 @@ pub const DUTY_HOURS: i64 = 10;
 #[derive(Debug)]
 pub struct Crew {
     pub id: CrewId,
-    location: Location,
+    pub location: Location,
     /// Ordered by time
-    duty: Vec<FlightId>,
+    pub duty: Vec<FlightId>,
+    pub next_claimed: Option<FlightId>,
 }
 
 impl Crew {
@@ -21,6 +22,7 @@ impl Crew {
             id,
             location: Location::Ground(location, now - TimeDelta::hours(2)),
             duty: Vec::new(),
+            next_claimed: None
         }
     }
 
@@ -51,23 +53,29 @@ impl Crew {
         if flight.crew[0] == self.id {
             self.duty.push(flight.id);
         }
+        if let Some(claimed) = self.next_claimed {
+            debug_assert_eq!(claimed, flight.id);
+        }
+        self.next_claimed = None;
     }
 
     pub fn land(&mut self, fl: &Flight, now: DateTime<Utc>) {
         let Location::InFlight(flight) = self.location else {
             panic!("land() called on crew when not in flight")
         };
-        assert_eq!(flight, fl.id);
+        debug_assert_eq!(flight, fl.id);
         self.location = Location::Ground(fl.dest, now);
     }
 
-    /// Acquires a Read lock
     fn duty_during(&self, start: &DateTime<Utc>, end: &DateTime<Utc>, model: &Model) -> Duration {
         self.duty
             .iter()
             .rev()
             .skip_while(|flt| model.flight_read(**flt).depart_time.unwrap() >= *end)
-            .take_while(|flt| model.flight_read(**flt).arrive_time.unwrap() >= *start)
+            .take_while(|flt| {
+                let flt = model.flight_read(**flt);
+                flt.arrive_time.unwrap_or(flt.act_arrive_time()) >= *start
+            })
             .map(|flt| duration_in_range(&model.flight_read(*flt), start, end))
             .sum()
     }
@@ -78,6 +86,11 @@ impl Crew {
         now: DateTime<Utc>,
         model: &Model,
     ) -> Option<Duration> {
+        if let Some(claimer) = self.next_claimed {
+            if claimer != flight.id {
+                return None;
+            }
+        }
         let turnaround_time = model.config.crew_turnaround_time;
         match self.location {
             Location::Ground(location, since) => {
@@ -93,7 +106,7 @@ impl Crew {
             Location::InFlight(ongoing) => {
                 let ongoing_flt = model.flight_read(ongoing);
                 if self.remaining_after_time(flight, ongoing_flt.act_arrive_time(), model)
-                    < Duration::zero()
+                    < Duration::zero() || ongoing_flt.dest != flight.origin
                 {
                     return None;
                 }
@@ -101,9 +114,20 @@ impl Crew {
             }
         }
     }
+
+    pub fn claim(&mut self, flight: FlightId) {
+        debug_assert!(self.next_claimed.is_none());
+        self.next_claimed = Some(flight);
+    }
+
+    pub fn unclaim(&mut self, flight: FlightId) {
+        if self.next_claimed == Some(flight) {
+            self.next_claimed = None;
+        }
+    }
 }
 
 fn duration_in_range(flight: &Flight, start: &DateTime<Utc>, end: &DateTime<Utc>) -> Duration {
-    min(&flight.arrive_time.unwrap(), end)
+    min(&flight.arrive_time.unwrap_or(flight.act_arrive_time()), end)
         .signed_duration_since(max(&flight.depart_time.unwrap(), start))
 }

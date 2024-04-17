@@ -6,6 +6,7 @@ DROP TABLE IF EXISTS crew;
 DROP TABLE IF EXISTS aircraft;
 DROP TABLE IF EXISTS airports;
 DROP TABLE IF EXISTS scenarios;
+DROP TABLE IF EXISTS disruptions;
 
 CREATE TABLE scenarios(
     sid     TEXT PRIMARY KEY,
@@ -60,7 +61,6 @@ CREATE TABLE flights(
     sid     TEXT NOT NULL REFERENCES scenarios(sid) ON DELETE CASCADE,
     FOREIGN KEY(origin, sid) REFERENCES airports(code, sid) ON DELETE CASCADE,
     FOREIGN KEY(dest, sid) REFERENCES airports(code, sid) ON DELETE CASCADE,
-    FOREIGN KEY(pilot, sid) REFERENCES crew(id, sid) ON DELETE CASCADE,
     FOREIGN KEY(aircraft, sid) REFERENCES aircraft(tail, sid) ON DELETE CASCADE,
     PRIMARY KEY(id, sid)
 );
@@ -74,6 +74,17 @@ CREATE TABLE demand(
 CREATE TABLE deadheaders(
     id  INTEGER NOT NULL,
     sid INTEGER NOT NULL REFERENCES scenarios(sid) ON DELETE CASCADE,
-    fid INTEGER NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
+    fid INTEGER NOT NULL,
+    FOREIGN KEY(fid, sid) REFERENCES flights(id, sid) ON DELETE CASCADE,
     FOREIGN KEY(id, sid) REFERENCES crew(id, sid) ON DELETE CASCADE
-)
+);
+
+CREATE TABLE disruptions(
+    airport     TEXT NOT NULL,
+    start       TEXT NOT NULL,
+    end         TEXT NOT NULL,
+    hourly_rate INTEGER NOT NULL,
+    type        TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    sid         TEXT NOT NULL REFERENCES scenarios(sid) ON DELETE CASCADE
+);

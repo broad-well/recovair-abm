@@ -5,6 +5,7 @@ use crate::{
     metrics::{CancelReason, ModelEvent, ModelEventType},
 };
 use chrono::{DateTime, TimeDelta, Utc};
+use neon::types::Finalize;
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -18,8 +19,10 @@ pub struct ModelConfig {
     pub max_delay: TimeDelta,
 }
 
+// Model should never be mutably borrowed as it needs to be borrowed practically everywhere
 pub struct Model {
     pub _now: Arc<RwLock<DateTime<Utc>>>,
+    pub end: DateTime<Utc>,
     pub fleet: HashMap<String, Arc<RwLock<Aircraft>>>,
     pub crew: HashMap<CrewId, Arc<RwLock<Crew>>>,
     pub airports: HashMap<AirportCode, Arc<RwLock<Airport>>>,
@@ -30,6 +33,8 @@ pub struct Model {
     pub metrics: RwLock<Option<JoinHandle<()>>>,
     pub config: ModelConfig,
 }
+
+impl Finalize for Model {}
 
 // This is a macro because if it were a member function,
 // we'd run into problems with concurrent borrows of self
@@ -116,6 +121,11 @@ impl Model {
     pub fn cancel_flight(&self, flight_id: FlightId, reason: CancelReason) {
         let mut flt = self.flight_write(flight_id);
         flt.cancelled = true;
+        for crew in &flt.crew {
+            self.crew[crew].write()
+                .unwrap().unclaim(flight_id);
+        }
+        self.fleet[&flt.aircraft_tail].write().unwrap().unclaim(flight_id);
         send_event!(self, ModelEventType::FlightCancelled(flight_id, reason));
     }
 

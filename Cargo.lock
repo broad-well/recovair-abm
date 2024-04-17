@@ -263,6 +263,7 @@ dependencies = [
  "chrono",
  "neon",
  "rusqlite",
+ "rust-lapper",
 ]
 
 [[package]]
@@ -277,6 +278,15 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
+]
+
+[[package]]
+name = "rust-lapper"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee43d8e721ac803031dbab6a944b957b49a3b11eadbc099880c8aaaebf23ed27"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

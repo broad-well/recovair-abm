@@ -7,7 +7,7 @@
 //!   - Delay flights if they lack resources
 //!   - Request departure from all `Disruption`s, and follow all delays given
 
-use std::{collections::BinaryHeap, ops::DerefMut, sync::Arc};
+use std::{cmp::max, collections::BinaryHeap, ops::DerefMut, sync::Arc};
 
 use crate::{
     aircraft::{Flight, FlightId},
@@ -75,6 +75,7 @@ pub struct Dispatcher {
     pub aircraft_selector: Option<Box<dyn AircraftSelectionStrategy>>,
     pub crew_selector: Option<Box<dyn CrewSelectionStrategy>>,
     pub wait_for_deadheaders: bool,
+    pub use_fallback_aircraft_selector: bool,
 
     pub aircraft_tolerance_before_reassign: TimeDelta,
     pub crew_tolerance_before_reassign: TimeDelta,
@@ -119,14 +120,12 @@ impl Dispatcher {
         );
 
         while let Some(update) = self.update_queue.pop() {
-            assert!(self.model.now() <= update.time);
+            if update.time > self.model.end { break; }
             {
                 *self.model._now.write().unwrap() = update.time;
             }
-            assert!(self.model.now() == update.time);
             self.update_flight(update);
         }
-
         send_event!(self.model, ModelEventType::SimulationComplete);
     }
     /// Check the status of the given `flight`.
@@ -167,7 +166,9 @@ impl Dispatcher {
                         .unwrap()
                         .read()
                         .unwrap();
-                    let ac_avail = aircraft.available_time(&*self.model, flt.origin);
+                    let ac_avail = aircraft.available_time(&*self.model, &flt);
+                    // println!("DEBUG: for flight {}, aircraft {} will be available at {} at {:?}",
+                    //     update.flight, flt.aircraft_tail, flt.origin, ac_avail);
                     if ac_avail
                         .map(|d| d > self.model.now() + self.aircraft_tolerance_before_reassign)
                         .unwrap_or(true)
@@ -185,9 +186,13 @@ impl Dispatcher {
                             if let Some(ac) = selector.deref_mut().select(flt.id, &self.model) {
                                 // Reassignment is given
                                 flt.reassign_aircraft(ac.clone());
+                                {
+                                    self.model.fleet[&ac].write().unwrap()
+                                        .claim(flt.id);
+                                }
                                 send_event!(
                                     self.model,
-                                    ModelEventType::AircraftAssignmentChanged(flt.id)
+                                    ModelEventType::AircraftAssignmentChanged(flt.id, ac.clone())
                                 );
                                 self.update_queue.push(DispatcherUpdate {
                                     flight: update.flight,
@@ -205,16 +210,60 @@ impl Dispatcher {
                             }
                         } else {
                             // Can't deviate, must wait
+                            // Use the fallback selector: Pick the aircraft that will be able to serve this flight the earliest
+                            drop(aircraft);
+                            drop(flt); // Switch to a read so that Aircraft::available_time doesn't cause a deadlock
+                            let flt = self.model.flight_read(update.flight);
+                            send_event!(self.model,
+                                ModelEventType::AircraftSelection(update.flight, flt.aircraft_tail.clone()));
+                            let aircraft_cands: Vec<(String, DateTime<Utc>)> = if self.use_fallback_aircraft_selector {
+                                self.model.airports
+                                    .get(&flt.origin).unwrap().read().unwrap()
+                                    .fleet
+                                    .iter()
+                                    .filter_map(|aircraft_id| {
+                                        let avail = self.model.fleet
+                                            .get(aircraft_id).unwrap().read().unwrap()
+                                            .available_time(&self.model, &flt);
+                                        avail.map(|i| (aircraft_id.clone(), i))
+                                    })
+                                    .collect()
+                            } else { Vec::new() };
                             drop(flt);
-                            Self::delay_departure(
-                                self.model.now(),
-                                &self.model,
-                                update.flight,
-                                RESOURCE_WAIT,
-                                DelayReason::AircraftShortage,
-                                &mut self.update_queue,
-                            );
-                            return;
+                            let delay_duration: Option<TimeDelta> = if aircraft_cands.is_empty() {
+                                Some(RESOURCE_WAIT)
+                            } else {
+                                let selected_aircraft = aircraft_cands.into_iter()
+                                    .min_by_key(|i| i.1)
+                                    .unwrap();
+                                let mut flt = self.model.flight_write(update.flight);
+                                flt.reassign_aircraft(selected_aircraft.0.clone());
+                                {
+                                    self.model.fleet[&selected_aircraft.0].write().unwrap()
+                                        .claim(flt.id);
+                                }
+                                send_event!(
+                                    self.model,
+                                    ModelEventType::AircraftAssignmentChanged(flt.id, selected_aircraft.0)
+                                );
+                                if selected_aircraft.1 <= self.model.now() {
+                                    None
+                                } else {
+                                    Some(selected_aircraft.1 - self.model.now())
+                                }
+                            };
+
+                            if let Some(delay_duration) = delay_duration {
+                                Self::delay_departure(
+                                    self.model.now(),
+                                    &self.model,
+                                    update.flight,
+                                    delay_duration,
+                                    DelayReason::AircraftShortage,
+                                    &mut self.update_queue,
+                                );
+                                return;
+                            }
                         }
                     } else if ac_avail.unwrap() > self.model.now() {
                         // Delay within tolerance
@@ -278,6 +327,12 @@ impl Dispatcher {
                             {
                                 // Reassignment made
                                 flt.reassign_crew(crews.clone());
+                                // We assume that all crews assigned at this point will be available soon (within crew_tolerance_before_reassign)
+                                // We also require all of them to either be on the flight to the origin or already at the origin.
+                                for crew in &crews {
+                                    self.model.crew[crew].write()
+                                        .unwrap().claim(flt.id);
+                                }
                                 send_event!(
                                     self.model,
                                     ModelEventType::CrewAssignmentChanged(flt.id, crews)
@@ -312,6 +367,8 @@ impl Dispatcher {
                                     .min_by_key(|i| i.1);
                                 if let Some((best_id, wait_time)) = best_crew {
                                     flt.reassign_crew(vec![*best_id]);
+                                    self.model.crew[best_id].write()
+                                        .unwrap().claim(flt.id);
                                     send_event!(
                                         self.model,
                                         ModelEventType::CrewAssignmentChanged(flt.id, vec![*best_id])
@@ -364,7 +421,7 @@ impl Dispatcher {
                         .filter(|(_, time)| time.unwrap() <= TimeDelta::zero())
                         .map(|i| i.0)
                         .collect();
-                    assert!(flt.crew[0] == prev_pilot);
+                    debug_assert!(flt.crew[0] == prev_pilot);
                 }
                 // Are disruptions preventing this flight from taking off?
                 {
@@ -440,6 +497,10 @@ impl Dispatcher {
                                 )
                             )
                         );
+                        {
+                            let mut flt = self.model.flight_write(update.flight);
+                            flt.delay_arrival(*time - self.model.now());
+                        }
                         self.update_queue.push(DispatcherUpdate {
                             flight: update.flight,
                             time: *time,
@@ -462,6 +523,10 @@ impl Dispatcher {
                                 DelayReason::RateLimited(dest)
                             )
                         );
+                        {
+                            let mut flt = self.model.flight_write(update.flight);
+                            flt.delay_arrival(arrive_time - self.model.now());
+                        }
                         self.update_queue.push(DispatcherUpdate {
                             flight: update.flight,
                             time: arrive_time,

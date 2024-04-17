@@ -1,3 +1,5 @@
+use std::cmp::max;
+
 use crate::crew::CrewId;
 use crate::model::Model;
 use crate::{airport::*, metrics::ModelEventType};
@@ -23,7 +25,7 @@ pub struct Flight {
     pub cancelled: bool,
     pub depart_time: Option<DateTime<Utc>>,
     pub arrive_time: Option<DateTime<Utc>>,
-
+    pub accum_delay: Option<TimeDelta>,
     pub sched_depart: DateTime<Utc>,
     pub sched_arrive: DateTime<Utc>,
 }
@@ -46,7 +48,7 @@ impl Flight {
     }
 
     pub fn est_arrive_time(&self, depart: &DateTime<Utc>) -> DateTime<Utc> {
-        *depart + (self.sched_arrive - self.sched_depart)
+        *depart + (self.sched_arrive - self.sched_depart + self.accum_delay.unwrap_or(TimeDelta::zero()))
     }
 
     pub fn act_arrive_time(&self) -> DateTime<Utc> {
@@ -65,12 +67,16 @@ impl Flight {
         self.arrive_time = Some(time);
     }
 
+    pub fn delay_arrival(&mut self, duration: TimeDelta) {
+        self.accum_delay = Some(self.accum_delay.unwrap_or(TimeDelta::zero()) + duration);
+    }
+
     pub fn reassign_aircraft(&mut self, tail: String) {
         self.aircraft_tail = tail;
     }
 
     pub fn reassign_crew(&mut self, id: Vec<CrewId>) {
-        assert!(!id.is_empty());
+        debug_assert!(!id.is_empty());
         self.crew = id;
     }
 }
@@ -89,6 +95,7 @@ pub struct Aircraft {
     pub location: Location,
     /// (Name, passenger capacity)
     pub type_: (String, u16),
+    pub next_claimed: Option<FlightId>,
 }
 
 impl Aircraft {
@@ -103,14 +110,16 @@ impl Aircraft {
             tail,
             location: Location::Ground(location, *now - TimeDelta::hours(2)),
             type_: (typename, capacity),
+            next_claimed: None
         }
     }
 
     pub fn takeoff(&mut self, flight_id: FlightId, time: DateTime<Utc>) -> ModelEventType {
         let Location::Ground(airport, since) = self.location else {
-            panic!("takeoff() called when aircraft in the air")
+            panic!("takeoff({}) called on {} when aircraft in the air", flight_id, self.tail)
         };
         self.location = Location::InFlight(flight_id);
+        self.next_claimed = None;
         ModelEventType::AircraftTurnedAround(self.tail.clone(), airport, time - since)
     }
 
@@ -118,15 +127,40 @@ impl Aircraft {
         self.location = Location::Ground(loc, time);
     }
 
-    pub fn available_time(&self, model: &Model, airport: AirportCode) -> Option<DateTime<Utc>> {
+    pub fn available_time(&self, model: &Model, flight: &Flight) -> Option<DateTime<Utc>> {
+        let airport = flight.origin;
+        if let Some(claimer) = self.next_claimed {
+            if claimer != flight.id {
+                return None;
+            }
+        }
         if let Location::Ground(_airport, since_time) = self.location {
             if _airport == airport {
                 Some(since_time + model.config.aircraft_turnaround_time)
             } else {
                 None
             }
-        } else {
-            None
+        } else if let Location::InFlight(flt_id) = self.location {
+            let flt = model.flight_read(flt_id);
+            if flt.dest == airport {
+                if model.now() > flt.act_arrive_time() {
+                    debug_assert!(false, "DEBUG: why am I still flying? {}, {:?}", self.tail, &self.location);
+                }
+                Some(max(model.now(), flt.act_arrive_time()) + model.config.aircraft_turnaround_time)
+            } else {
+                None
+            }
+        } else { None }
+    }
+
+    pub fn claim(&mut self, flight: FlightId) {
+        debug_assert_eq!(self.next_claimed, None);
+        self.next_claimed = Some(flight);
+    }
+
+    pub fn unclaim(&mut self, flight: FlightId) {
+        if self.next_claimed == Some(flight) {
+            self.next_claimed = None;
         }
     }
 }

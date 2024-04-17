@@ -10,7 +10,7 @@ use rusqlite::Connection;
 
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
-    airport::{Airport, AirportCode, PassengerDemand},
+    airport::{Airport, AirportCode, DepartureRateLimit, Disruption, GroundDelayProgram, PassengerDemand, SlotManager},
     crew::{Crew, CrewId},
     dispatcher::{strategies, Dispatcher},
     metrics::MetricsProcessor,
@@ -56,7 +56,7 @@ impl From<ParseError> for ScenarioLoaderError {
 
 impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
     fn read_model(&self) -> Result<Model, ScenarioLoaderError> {
-        let (now, config) = self.read_config()?;
+        let (now, end, config) = self.read_config()?;
         let (tx, rx) = mpsc::channel();
         let mut model = Model {
             airports: HashMap::new(),
@@ -65,6 +65,7 @@ impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
             flights: HashMap::new(),
             disruptions: Vec::new(),
             _now: Arc::new(RwLock::new(now)),
+            end,
             publisher: tx,
             metrics: RwLock::new(Some(MetricsProcessor::new(rx))),
             config,
@@ -74,6 +75,7 @@ impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
         self.read_crew(&mut model)?;
         self.read_flights(&mut model)?;
         self.read_demand(&mut model)?;
+        self.read_disruptions(&mut model)?;
         Ok(model)
     }
 
@@ -100,6 +102,7 @@ impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
             aircraft_tolerance_before_reassign: TimeDelta::minutes(
                 row.get("aircraft_reassign_tolerance")?,
             ),
+            use_fallback_aircraft_selector: true, // TODO add adjuster
             crew_tolerance_before_reassign: TimeDelta::minutes(row.get("crew_reassign_tolerance")?),
             update_queue: BinaryHeap::new(),
         })
@@ -201,6 +204,7 @@ impl SqliteScenarioLoader {
                 cancelled: false,
                 depart_time: None,
                 arrive_time: None,
+                accum_delay: None,
                 sched_depart: Self::parse_time(&row.get::<&str, String>("sched_depart")?)?,
                 sched_arrive: Self::parse_time(&row.get::<&str, String>("sched_arrive")?)?,
             };
@@ -214,9 +218,9 @@ impl SqliteScenarioLoader {
         Ok(())
     }
 
-    fn read_config(&self) -> Result<(DateTime<Utc>, ModelConfig), ScenarioLoaderError> {
+    fn read_config(&self) -> Result<(DateTime<Utc>, DateTime<Utc>, ModelConfig), ScenarioLoaderError> {
         let mut stmt = self.conn.prepare(
-            "SELECT start_time, crew_turnaround_time, aircraft_turnaround_time, max_delay FROM scenarios WHERE sid = (?1)")?;
+            "SELECT start_time, end_time, crew_turnaround_time, aircraft_turnaround_time, max_delay FROM scenarios WHERE sid = (?1)")?;
         let mut rows = stmt.query([&self.id])?;
         let Some(row) = rows.next()? else {
             return Err(ScenarioLoaderError::MissingRequiredDataError(
@@ -226,8 +230,11 @@ impl SqliteScenarioLoader {
 
         let start_time_str: String = row.get("start_time")?;
         let start = Self::parse_time(&start_time_str)?;
+        let end_time_str: String = row.get("end_time")?;
+        let end = Self::parse_time(&end_time_str)?;
         Ok((
             start,
+            end,
             ModelConfig {
                 crew_turnaround_time: TimeDelta::minutes(row.get("crew_turnaround_time")?),
                 aircraft_turnaround_time: TimeDelta::minutes(row.get("aircraft_turnaround_time")?),
@@ -250,15 +257,39 @@ impl SqliteScenarioLoader {
                     .map(|string| AirportCode::from(&string.to_owned()))
                     .collect(),
                 count: row.get("amount")?,
+                flights_taken: Vec::new(),
             };
-            model
-                .airports
-                .get(&demand.path[0])
-                .unwrap()
-                .write()
-                .unwrap()
-                .passengers
-                .push(demand);
+            if demand.count > 0 {
+                model
+                    .airports
+                    .get(&demand.path[0])
+                    .unwrap()
+                    .write()
+                    .unwrap()
+                    .passengers
+                    .push(demand);
+            }
+        }
+        Ok(())
+    }
+
+    fn read_disruptions(&self, model: &mut Model) -> Result<(), ScenarioLoaderError> {
+        let mut stmt = self.conn.prepare("SELECT airport, start, end, hourly_rate, type, reason FROM disruptions WHERE sid = ?")?;
+        let mut rows = stmt.query([&self.id])?;
+
+        while let Some(row) = rows.next()? {
+            let start = Self::parse_time(&row.get::<&str, String>("start")?)?;
+            let end = Self::parse_time(&row.get::<&str, String>("end")?)?;
+            let rate: u16 = row.get("hourly_rate")?;
+            let slot_man: SlotManager<FlightId> = SlotManager::new(start, end, rate);
+            let _type: String = row.get("type")?;
+            let site = AirportCode::from(&row.get("airport")?);
+            let disruption: Arc<RwLock<dyn Disruption>> = match _type.as_str() {
+                "gdp" => Arc::new(RwLock::new(GroundDelayProgram { site, slots: slot_man, reason: row.get("reason")? })),
+                "dep" => Arc::new(RwLock::new(DepartureRateLimit { site, slots: slot_man, reason: row.get("reason")? })),
+                _ => return Err(ScenarioLoaderError::MissingRequiredDataError("unknown disruption type"))
+            };
+            model.disruptions.push(disruption);
         }
         Ok(())
     }
