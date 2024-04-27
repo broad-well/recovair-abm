@@ -168,7 +168,7 @@ impl PassengerDemand {
                 copy.extend(self.flights_taken.iter());
                 copy.push(flight);
                 copy
-            }
+            },
         }
     }
 }
@@ -256,7 +256,7 @@ impl<T: PartialEq> SlotManager<T> {
             start,
             end,
             slots_assigned,
-            max_slot_size: hourly_rate
+            max_slot_size: hourly_rate,
         }
     }
 

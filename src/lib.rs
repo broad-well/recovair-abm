@@ -1,6 +1,7 @@
 extern crate chrono;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
+use metrics::{DelayReason, MetricsProcessor};
 use model::Model;
 use neon::prelude::*;
 use scenario::{ScenarioLoader, SqliteScenarioLoader};
@@ -12,7 +13,6 @@ pub mod dispatcher;
 pub mod metrics;
 pub mod model;
 pub mod scenario;
-
 
 macro_rules! try_load {
     ( $cx:expr, $load_op:expr ) => {{
@@ -32,23 +32,58 @@ macro_rules! object_set {
         let item = $val;
         // Can't mutably borrow $cx multiple times at once, hence the above statement
         $obj.set(&mut $cx, $key, item)?;
-    }
+    };
 }
 
+struct FinishedModel {
+    model: Arc<Model>,
+    metrics: MetricsProcessor
+}
+
+impl Finalize for FinishedModel {}
+
 fn encode_model(mut cx: FunctionContext) -> JsResult<JsObject> {
-    let model = cx.argument::<JsBox<Arc<Model>>>(0)?;
+    let finished_model = &cx.argument::<JsBox<FinishedModel>>(0)?;
+    let model = &finished_model.model;
     let flights = cx.empty_object();
     for (flight_id, flight) in &model.flights {
         let flight = {
             let flight = flight.read().unwrap();
             let obj = cx.empty_object();
             if !flight.cancelled {
-                object_set!(cx, obj, "start", cx.date(flight.depart_time.unwrap().timestamp() as f64 * 1000f64).expect("bad date"));
-                object_set!(cx, obj, "end", cx.date(flight.arrive_time.unwrap().timestamp() as f64 * 1000f64).expect("bad date"));
+                object_set!(
+                    cx,
+                    obj,
+                    "start",
+                    cx.number(flight.depart_time.unwrap().timestamp() as f64 * 1000f64)
+                );
+                object_set!(
+                    cx,
+                    obj,
+                    "end",
+                    cx.number(flight.arrive_time.unwrap().timestamp() as f64 * 1000f64)
+                );
             }
+            object_set!(
+                cx,
+                obj,
+                "sched_start",
+                cx.number(flight.sched_depart.timestamp() as f64 * 1000f64)
+            );
+            object_set!(
+                cx,
+                obj,
+                "sched_end",
+                cx.number(flight.sched_arrive.timestamp() as f64 * 1000f64)
+            );
             object_set!(cx, obj, "origin", cx.string(flight.origin.to_string()));
             object_set!(cx, obj, "dest", cx.string(flight.dest.to_string()));
-            object_set!(cx, obj, "flight_number", cx.string(flight.flight_number.to_string()));
+            object_set!(
+                cx,
+                obj,
+                "flight_number",
+                cx.string(flight.flight_number.to_string())
+            );
             object_set!(cx, obj, "tail", cx.string(flight.aircraft_tail.to_string()));
             object_set!(cx, obj, "cancelled", cx.boolean(flight.cancelled));
             Ok(obj)
@@ -57,9 +92,7 @@ fn encode_model(mut cx: FunctionContext) -> JsResult<JsObject> {
     }
     let fleet = cx.empty_object();
     for (tail, aircraft) in &model.fleet {
-        let kind = {
-            cx.string(aircraft.read().unwrap().type_.0.clone())
-        };
+        let kind = { cx.string(aircraft.read().unwrap().type_.0.clone()) };
         object_set!(cx, fleet, tail.as_str(), kind);
     }
     let demands = cx.empty_object();
@@ -83,16 +116,51 @@ fn encode_model(mut cx: FunctionContext) -> JsResult<JsObject> {
         }
         object_set!(cx, demands, loc.to_string().as_str(), value);
     }
+    let metrics = {
+        let arrival_delay_dist = {
+            let arr = cx.empty_array();
+            for (i, delay) in finished_model.metrics.arrival_delays.iter().enumerate() {
+                object_set!(cx, arr, i as u32, cx.number(*delay as i32));
+            }
+            arr
+        };
+        let otp = {
+            let obj = cx.empty_object();
+            for (time, (on_time, total, cancelled)) in &finished_model.metrics.otp {
+                let arr = cx.empty_array();
+                object_set!(cx, arr, 0, cx.number(*on_time));
+                object_set!(cx, arr, 1, cx.number(*total));
+                object_set!(cx, arr, 2, cx.number(*cancelled));
+                object_set!(cx, obj, (time.timestamp() * 1000).to_string().as_str(), arr);
+            }
+            obj
+        };
+        let dep_delay_reasons = cx.empty_object();
+        for (reason, minutes) in finished_model.metrics.dep_delay_causes.iter() {
+            object_set!(cx, dep_delay_reasons, format!("{:?}", reason).as_str(), cx.number(*minutes));
+        }
+        let arr_delay_reasons = cx.empty_object();
+        for (reason, minutes) in finished_model.metrics.arr_delay_causes.iter() {
+            object_set!(cx, arr_delay_reasons, format!("{:?}", reason).as_str(), cx.number(*minutes));
+        }
+        
+        let obj = cx.empty_object();
+        obj.set(&mut cx, "delays", arrival_delay_dist)?;
+        obj.set(&mut cx, "otp", otp)?;
+        obj.set(&mut cx, "dep_delay_reasons", dep_delay_reasons)?;
+        obj.set(&mut cx, "arr_delay_reasons", arr_delay_reasons)?;
+        obj
+    };
 
-    
     let obj = cx.empty_object();
     obj.set(&mut cx, "flights", flights)?;
     obj.set(&mut cx, "fleet", fleet)?;
     obj.set(&mut cx, "demands", demands)?;
+    obj.set(&mut cx, "metrics", metrics)?;
     Ok(obj)
 }
 
-fn run_model(mut cx: FunctionContext) -> JsResult<JsBox<Arc<Model>>> {
+fn run_model(mut cx: FunctionContext) -> JsResult<JsBox<FinishedModel>> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
     let scenario = cx.argument::<JsString>(1)?.value(&mut cx);
     let loader = try_load!(&mut cx, SqliteScenarioLoader::new(&path, scenario));
@@ -101,11 +169,10 @@ fn run_model(mut cx: FunctionContext) -> JsResult<JsBox<Arc<Model>>> {
 
     dispatcher.init_flight_updates();
     dispatcher.run_model();
-    if let Some(handle) = model.metrics.write().unwrap().take() {
-        handle.join().expect("Metrics thread failed");
-    }
+    let Some(handle) = model.metrics.write().unwrap().take() else { panic!() };
+    let metrics = handle.join().expect("Metrics thread failed");
 
-    Ok(cx.boxed(model))
+    Ok(cx.boxed(FinishedModel { model, metrics }))
 }
 
 #[neon::main]

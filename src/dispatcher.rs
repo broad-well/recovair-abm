@@ -120,7 +120,9 @@ impl Dispatcher {
         );
 
         while let Some(update) = self.update_queue.pop() {
-            if update.time > self.model.end { break; }
+            if update.time > self.model.end {
+                break;
+            }
             {
                 *self.model._now.write().unwrap() = update.time;
             }
@@ -187,8 +189,7 @@ impl Dispatcher {
                                 // Reassignment is given
                                 flt.reassign_aircraft(ac.clone());
                                 {
-                                    self.model.fleet[&ac].write().unwrap()
-                                        .claim(flt.id);
+                                    self.model.fleet[&ac].write().unwrap().claim(flt.id);
                                 }
                                 send_event!(
                                     self.model,
@@ -214,37 +215,58 @@ impl Dispatcher {
                             drop(aircraft);
                             drop(flt); // Switch to a read so that Aircraft::available_time doesn't cause a deadlock
                             let flt = self.model.flight_read(update.flight);
-                            send_event!(self.model,
-                                ModelEventType::AircraftSelection(update.flight, flt.aircraft_tail.clone()));
-                            let aircraft_cands: Vec<(String, DateTime<Utc>)> = if self.use_fallback_aircraft_selector {
-                                self.model.airports
-                                    .get(&flt.origin).unwrap().read().unwrap()
-                                    .fleet
-                                    .iter()
-                                    .filter_map(|aircraft_id| {
-                                        let avail = self.model.fleet
-                                            .get(aircraft_id).unwrap().read().unwrap()
-                                            .available_time(&self.model, &flt);
-                                        avail.map(|i| (aircraft_id.clone(), i))
-                                    })
-                                    .collect()
-                            } else { Vec::new() };
+                            send_event!(
+                                self.model,
+                                ModelEventType::AircraftSelection(
+                                    update.flight,
+                                    flt.aircraft_tail.clone()
+                                )
+                            );
+                            let aircraft_cands: Vec<(String, DateTime<Utc>)> =
+                                if self.use_fallback_aircraft_selector {
+                                    self.model
+                                        .airports
+                                        .get(&flt.origin)
+                                        .unwrap()
+                                        .read()
+                                        .unwrap()
+                                        .fleet
+                                        .iter()
+                                        .filter_map(|aircraft_id| {
+                                            let avail = self
+                                                .model
+                                                .fleet
+                                                .get(aircraft_id)
+                                                .unwrap()
+                                                .read()
+                                                .unwrap()
+                                                .available_time(&self.model, &flt);
+                                            avail.map(|i| (aircraft_id.clone(), i))
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
                             drop(flt);
                             let delay_duration: Option<TimeDelta> = if aircraft_cands.is_empty() {
                                 Some(RESOURCE_WAIT)
                             } else {
-                                let selected_aircraft = aircraft_cands.into_iter()
-                                    .min_by_key(|i| i.1)
-                                    .unwrap();
+                                let selected_aircraft =
+                                    aircraft_cands.into_iter().min_by_key(|i| i.1).unwrap();
                                 let mut flt = self.model.flight_write(update.flight);
                                 flt.reassign_aircraft(selected_aircraft.0.clone());
                                 {
-                                    self.model.fleet[&selected_aircraft.0].write().unwrap()
+                                    self.model.fleet[&selected_aircraft.0]
+                                        .write()
+                                        .unwrap()
                                         .claim(flt.id);
                                 }
                                 send_event!(
                                     self.model,
-                                    ModelEventType::AircraftAssignmentChanged(flt.id, selected_aircraft.0)
+                                    ModelEventType::AircraftAssignmentChanged(
+                                        flt.id,
+                                        selected_aircraft.0
+                                    )
                                 );
                                 if selected_aircraft.1 <= self.model.now() {
                                     None
@@ -330,8 +352,7 @@ impl Dispatcher {
                                 // We assume that all crews assigned at this point will be available soon (within crew_tolerance_before_reassign)
                                 // We also require all of them to either be on the flight to the origin or already at the origin.
                                 for crew in &crews {
-                                    self.model.crew[crew].write()
-                                        .unwrap().claim(flt.id);
+                                    self.model.crew[crew].write().unwrap().claim(flt.id);
                                 }
                                 send_event!(
                                     self.model,
@@ -354,24 +375,41 @@ impl Dispatcher {
                         } else {
                             // No crew selector, just wait
                             let mut delay_decision = RESOURCE_WAIT;
-                            if flt.crew.is_empty() && !self.model.airports[&flt.origin].read().unwrap().crew.is_empty() {
+                            if flt.crew.is_empty()
+                                && !self.model.airports[&flt.origin]
+                                    .read()
+                                    .unwrap()
+                                    .crew
+                                    .is_empty()
+                            {
                                 // Fallback selector: Pick the crew that can take this flight most immediately
                                 let arpt = self.model.airports[&flt.origin].read().unwrap();
-                                let best_crew = arpt.crew.iter()
+                                let best_crew = arpt
+                                    .crew
+                                    .iter()
                                     .map(|id| {
                                         let crew = self.model.crew[id].read().unwrap();
-                                        (id, crew.time_until_available_for(&flt, self.model.now(), &self.model))
+                                        (
+                                            id,
+                                            crew.time_until_available_for(
+                                                &flt,
+                                                self.model.now(),
+                                                &self.model,
+                                            ),
+                                        )
                                     })
                                     .filter(|i| i.1.is_some())
                                     .map(|i| (i.0, i.1.unwrap()))
                                     .min_by_key(|i| i.1);
                                 if let Some((best_id, wait_time)) = best_crew {
                                     flt.reassign_crew(vec![*best_id]);
-                                    self.model.crew[best_id].write()
-                                        .unwrap().claim(flt.id);
+                                    self.model.crew[best_id].write().unwrap().claim(flt.id);
                                     send_event!(
                                         self.model,
-                                        ModelEventType::CrewAssignmentChanged(flt.id, vec![*best_id])
+                                        ModelEventType::CrewAssignmentChanged(
+                                            flt.id,
+                                            vec![*best_id]
+                                        )
                                     );
                                     if wait_time <= TimeDelta::zero() {
                                         self.update_queue.push(DispatcherUpdate {

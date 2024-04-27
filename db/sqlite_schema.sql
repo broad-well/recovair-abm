@@ -29,6 +29,8 @@ CREATE TABLE airports(
     code    TEXT NOT NULL,
     max_dep_per_hour INTEGER NOT NULL,
     max_arr_per_hour INTEGER NOT NULL,
+    latitude    REAL NOT NULL,
+    longitude   REAL NOT NULL,
     sid     TEXT NOT NULL REFERENCES scenarios(sid) ON DELETE CASCADE,
     PRIMARY KEY(code, sid)
 );

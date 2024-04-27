@@ -1,11 +1,28 @@
 use std::{
-    cell::RefCell, cmp::max, collections::HashMap, path::Path, rc::Rc, sync::{mpsc, Weak}, thread::{self, JoinHandle}
+    cell::RefCell,
+    cmp::max,
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    rc::Rc,
+    sync::{mpsc, Weak},
+    thread::{self, JoinHandle},
 };
 
 use chrono::{DateTime, Duration, TimeDelta, Utc};
-use neon::{context::{Context, FunctionContext}, object::Object, result::JsResult, types::{JsObject, JsValue}};
+use neon::{
+    context::{Context, FunctionContext},
+    object::Object,
+    result::JsResult,
+    types::{JsObject, JsValue},
+};
+use rust_lapper::{Interval, Lapper};
 
-use crate::{aircraft::{Aircraft, Flight, FlightId}, airport::{Airport, AirportCode, PassengerDemand}, crew::{Crew, CrewId}, model::Model};
+use crate::{
+    aircraft::{Aircraft, Flight, FlightId},
+    airport::{Airport, AirportCode, PassengerDemand},
+    crew::{Crew, CrewId},
+    model::Model,
+};
 
 pub struct ModelEvent {
     pub time: DateTime<Utc>,
@@ -60,19 +77,16 @@ pub struct MetricsProcessor {
     receiver: mpsc::Receiver<ModelEvent>,
     model: Weak<Model>,
     // more memory needed to compute KPIs
-
     /// On-time performance measurement. Delays are stored in minutes
-    arrival_delays: Vec<u16>,
-    /// (On-time flight count, total flight count)
-    otp: (u32, u32),
+    pub arrival_delays: Vec<u16>,
+    /// (On-time flight count, total flight count, cancellation count)
+    pub otp: BTreeMap<DateTime<Utc>, (u32, u32, u32)>,
 
     /// Delay cause distribution (departure)
-    dep_delay_causes: HashMap<DelayReason, u32>,
+    pub dep_delay_causes: HashMap<DelayReason, u32>,
     /// Delay cause distribution (arrival)
-    arr_delay_causes: HashMap<DelayReason, u32>,
+    pub arr_delay_causes: HashMap<DelayReason, u32>,
 }
-
-
 
 // impl MapElement for Airport {
 //     fn encode(&self, cx: Rc<RefCell<FunctionContext>>) -> JsResult<'_, JsObject> {
@@ -84,7 +98,6 @@ pub struct MetricsProcessor {
 //         Ok(obj)
 //     }
 // }
-
 
 // impl MapElement for Crew {
 //     fn encode(&self, cx: Rc<RefCell<FunctionContext>>) -> JsResult<'_, JsObject> {
@@ -101,33 +114,40 @@ pub struct MetricsProcessor {
 // }
 
 
-pub struct MetricsResults {
-    
-}
 
 impl MetricsProcessor {
-    pub fn new(receiver: mpsc::Receiver<ModelEvent>) -> JoinHandle<()> {
+    pub fn new(receiver: mpsc::Receiver<ModelEvent>) -> JoinHandle<MetricsProcessor> {
         let mut proc = Self {
             receiver,
             model: Weak::new(),
             arrival_delays: Vec::new(),
             dep_delay_causes: HashMap::new(),
             arr_delay_causes: HashMap::new(),
-            otp: (0, 0),
+            otp: BTreeMap::new(),
         };
         thread::spawn(move || proc.run())
     }
 
-    fn run(&mut self) {
+    fn run(mut self) -> MetricsProcessor {
         loop {
             let Ok(event) = self.receiver.recv() else {
                 println!("metrics thread failed to receive event");
-                return;
+                panic!();
             };
             match event.data {
                 ModelEventType::SimulationComplete => {
                     // TODO write data
-                    return;
+                    // let model = self.model.upgrade().unwrap();
+                    // let intervals = model.flights.iter()
+                    //     .map(|(id, flight)| (id, flight.read().unwrap()))
+                    //     .filter(|(_, flight)| !flight.cancelled)
+                    //     .map(|(id, flight)| Interval {
+                    //         start: flight.depart_time.unwrap().timestamp() as u64,
+                    //         stop: flight.arrive_time.unwrap().timestamp() as u64,
+                    //         val: *id
+                    //     })
+                    //     .collect::<Vec<_>>();
+                    return self;
                 }
                 ModelEventType::SimulationStarted(model) => {
                     self.model = model;
@@ -136,7 +156,7 @@ impl MetricsProcessor {
                     continue;
                 }
                 _ => {
-                    println!("[{}] {:?}", event.time, event.data);
+                    // println!("[{}] {:?}", event.time, event.data);
                 }
             }
 
@@ -147,36 +167,58 @@ impl MetricsProcessor {
 
     fn track_otp(&mut self, event: &ModelEvent) {
         if let ModelEventType::FlightArrived(id) = event.data {
-            let Some(mdl) = self.model.upgrade() else { return; };
+            let Some(mdl) = self.model.upgrade() else {
+                return;
+            };
             let flt = mdl.flight_read(id);
             // println!("[{}] {:?} ({}, {} from {} to {} with {} passengers, piloted by {})",
             //     event.time, event.data, &flt.flight_number, &flt.aircraft_tail, &flt.origin, &flt.dest, flt.passengers.iter().map(|i| i.count).sum::<u32>(), flt.crew[0]);
             let delay = max(TimeDelta::zero(), event.time - flt.sched_arrive);
             self.arrival_delays.push(delay.num_minutes() as u16);
 
-            self.otp.1 += 1;
+            let mut prev = self.otp
+                .last_key_value()
+                .map(|i| i.1)
+                .unwrap_or(&(0, 0, 0)).clone();
+            prev.1 += 1;
             if delay.num_minutes() <= 15 {
-                self.otp.0 += 1;
+                prev.0 += 1;
             }
-            println!("passenger load report for flight {} from {} to {}:", flt.flight_number, flt.origin, flt.dest);
-            for psg in &flt.passengers {
-                println!("{}\t of {} [history: {:?}]",
-                    psg.count,
-                    psg.path.iter().map(|i| i.to_string()).collect::<Vec<String>>().join("->"),
-                    &psg.flights_taken);
-            }
+            self.otp.insert(event.time, prev);
+
+            // println!(
+            //     "passenger load report for flight {} from {} to {}:",
+            //     flt.flight_number, flt.origin, flt.dest
+            // );
+            // for psg in &flt.passengers {
+            //     println!(
+            //         "{}\t of {} [history: {:?}]",
+            //         psg.count,
+            //         psg.path
+            //             .iter()
+            //             .map(|i| i.to_string())
+            //             .collect::<Vec<String>>()
+            //             .join("->"),
+            //         &psg.flights_taken
+            //     );
+            // }
+        } else if let ModelEventType::FlightCancelled(_, _) = event.data {
+            let mut prev = self.otp
+                .last_key_value()
+                .map(|i| i.1)
+                .unwrap_or(&(0, 0, 0)).clone();
+            prev.2 += 1;
+            self.otp.insert(event.time, prev);
         }
     }
 
     fn track_delay_causes(&mut self, event: &ModelEvent) {
         if let ModelEventType::FlightArrivalDelayed(_id, duration, reason) = &event.data {
-            *self.arr_delay_causes
-                .entry(reason.clone())
-                .or_insert(0) += duration.num_minutes() as u32;
+            *self.arr_delay_causes.entry(reason.clone()).or_insert(0) +=
+                duration.num_minutes() as u32;
         } else if let ModelEventType::FlightDepartureDelayed(_id, duration, reason) = &event.data {
-            *self.dep_delay_causes
-                .entry(reason.clone())
-                .or_insert(0) += duration.num_minutes() as u32;
+            *self.dep_delay_causes.entry(reason.clone()).or_insert(0) +=
+                duration.num_minutes() as u32;
         }
     }
 }

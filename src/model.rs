@@ -2,7 +2,7 @@ use crate::{
     aircraft::{Aircraft, Flight, FlightId},
     airport::{Airport, AirportCode, Clearance, Disruption},
     crew::{Crew, CrewId},
-    metrics::{CancelReason, ModelEvent, ModelEventType},
+    metrics::{CancelReason, MetricsProcessor, ModelEvent, ModelEventType},
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use neon::types::Finalize;
@@ -30,7 +30,7 @@ pub struct Model {
     pub disruptions: Vec<Arc<RwLock<dyn Disruption>>>,
     pub publisher: mpsc::Sender<ModelEvent>,
 
-    pub metrics: RwLock<Option<JoinHandle<()>>>,
+    pub metrics: RwLock<Option<JoinHandle<MetricsProcessor>>>,
     pub config: ModelConfig,
 }
 
@@ -122,10 +122,12 @@ impl Model {
         let mut flt = self.flight_write(flight_id);
         flt.cancelled = true;
         for crew in &flt.crew {
-            self.crew[crew].write()
-                .unwrap().unclaim(flight_id);
+            self.crew[crew].write().unwrap().unclaim(flight_id);
         }
-        self.fleet[&flt.aircraft_tail].write().unwrap().unclaim(flight_id);
+        self.fleet[&flt.aircraft_tail]
+            .write()
+            .unwrap()
+            .unclaim(flight_id);
         send_event!(self, ModelEventType::FlightCancelled(flight_id, reason));
     }
 

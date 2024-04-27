@@ -22,7 +22,7 @@ impl Crew {
             id,
             location: Location::Ground(location, now - TimeDelta::hours(2)),
             duty: Vec::new(),
-            next_claimed: None
+            next_claimed: None,
         }
     }
 
@@ -106,7 +106,8 @@ impl Crew {
             Location::InFlight(ongoing) => {
                 let ongoing_flt = model.flight_read(ongoing);
                 if self.remaining_after_time(flight, ongoing_flt.act_arrive_time(), model)
-                    < Duration::zero() || ongoing_flt.dest != flight.origin
+                    < Duration::zero()
+                    || ongoing_flt.dest != flight.origin
                 {
                     return None;
                 }

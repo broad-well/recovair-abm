@@ -223,9 +223,9 @@ class DatabaseWriter:
                           (self.sid, name, start, end))
 
     def write_airports(self, arpt):
-        args = ((row['airport'], row['departures'], row['arrivals'], self.sid) for _, row in arpt.iterrows())
-        self.conn.executemany("INSERT INTO airports(code, max_dep_per_hour, max_arr_per_hour, sid) "
-                         "VALUES (?,?,?,?)", args)
+        args = ((row['airport'], row['departures'], row['arrivals'], airport_coords.LATITUDE[row['airport']], airport_coords.LONGITUDE[row['airport']], self.sid) for _, row in arpt.iterrows())
+        self.conn.executemany("INSERT INTO airports(code, max_dep_per_hour, max_arr_per_hour, latitude, longitude, sid) "
+                         "VALUES (?,?,?,?,?,?)", args)
 
     def write_aircraft(self, acft):
         args = ((row['N-NUMBER'], row['LOCATION'], row['TYPE'], row['CAPACITY'], self.sid) for _, row in acft.iterrows())
@@ -296,16 +296,16 @@ if __name__ == '__main__':
     #     print(i)
     acft = get_aircraft_types('../truth/MASTER.txt', '../truth/ACFTREF.txt')
     writer = DatabaseWriter("test.db", "jan28-bts-import")
-    # writer.write_scenario("January 28 BTS", "2024-01-28 00:00:00", "2024-01-29 20:00:00")
-    # arpts = get_airline_airport_capacities(df)
-    # writer.write_airports(arpts)
-    # acft = add_initial_locations(acft, df)
-    # writer.write_aircraft(acft)
-    # writer.write_crew(synthesize_crew(df))
-    # writer.write_flights(df)
+    writer.write_scenario("January 28 BTS", "2024-01-28 00:00:00", "2024-01-29 20:00:00")
+    arpts = get_airline_airport_capacities(df)
+    writer.write_airports(arpts)
+    acft = add_initial_locations(acft, df)
+    writer.write_aircraft(acft)
+    writer.write_crew(synthesize_crew(df, mult=2))
+    writer.write_flights(df)
     writer.write_synthesized_itineraries(
         '../truth/T_T100D_MARKET_US_CARRIER_ONLY.csv',
         '../truth/T_T100D_SEGMENT_US_CARRIER_ONLY.csv',
-        'WN', days=1)
+        'WN', days=1.5)
     writer.conn.commit()
     writer.conn.close()

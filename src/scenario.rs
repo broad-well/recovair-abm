@@ -10,7 +10,10 @@ use rusqlite::Connection;
 
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
-    airport::{Airport, AirportCode, DepartureRateLimit, Disruption, GroundDelayProgram, PassengerDemand, SlotManager},
+    airport::{
+        Airport, AirportCode, DepartureRateLimit, Disruption, GroundDelayProgram, PassengerDemand,
+        SlotManager,
+    },
     crew::{Crew, CrewId},
     dispatcher::{strategies, Dispatcher},
     metrics::MetricsProcessor,
@@ -218,7 +221,9 @@ impl SqliteScenarioLoader {
         Ok(())
     }
 
-    fn read_config(&self) -> Result<(DateTime<Utc>, DateTime<Utc>, ModelConfig), ScenarioLoaderError> {
+    fn read_config(
+        &self,
+    ) -> Result<(DateTime<Utc>, DateTime<Utc>, ModelConfig), ScenarioLoaderError> {
         let mut stmt = self.conn.prepare(
             "SELECT start_time, end_time, crew_turnaround_time, aircraft_turnaround_time, max_delay FROM scenarios WHERE sid = (?1)")?;
         let mut rows = stmt.query([&self.id])?;
@@ -274,7 +279,9 @@ impl SqliteScenarioLoader {
     }
 
     fn read_disruptions(&self, model: &mut Model) -> Result<(), ScenarioLoaderError> {
-        let mut stmt = self.conn.prepare("SELECT airport, start, end, hourly_rate, type, reason FROM disruptions WHERE sid = ?")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT airport, start, end, hourly_rate, type, reason FROM disruptions WHERE sid = ?",
+        )?;
         let mut rows = stmt.query([&self.id])?;
 
         while let Some(row) = rows.next()? {
@@ -285,9 +292,21 @@ impl SqliteScenarioLoader {
             let _type: String = row.get("type")?;
             let site = AirportCode::from(&row.get("airport")?);
             let disruption: Arc<RwLock<dyn Disruption>> = match _type.as_str() {
-                "gdp" => Arc::new(RwLock::new(GroundDelayProgram { site, slots: slot_man, reason: row.get("reason")? })),
-                "dep" => Arc::new(RwLock::new(DepartureRateLimit { site, slots: slot_man, reason: row.get("reason")? })),
-                _ => return Err(ScenarioLoaderError::MissingRequiredDataError("unknown disruption type"))
+                "gdp" => Arc::new(RwLock::new(GroundDelayProgram {
+                    site,
+                    slots: slot_man,
+                    reason: row.get("reason")?,
+                })),
+                "dep" => Arc::new(RwLock::new(DepartureRateLimit {
+                    site,
+                    slots: slot_man,
+                    reason: row.get("reason")?,
+                })),
+                _ => {
+                    return Err(ScenarioLoaderError::MissingRequiredDataError(
+                        "unknown disruption type",
+                    ))
+                }
             };
             model.disruptions.push(disruption);
         }

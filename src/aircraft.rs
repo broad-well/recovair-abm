@@ -48,7 +48,9 @@ impl Flight {
     }
 
     pub fn est_arrive_time(&self, depart: &DateTime<Utc>) -> DateTime<Utc> {
-        *depart + (self.sched_arrive - self.sched_depart + self.accum_delay.unwrap_or(TimeDelta::zero()))
+        *depart
+            + (self.sched_arrive - self.sched_depart
+                + self.accum_delay.unwrap_or(TimeDelta::zero()))
     }
 
     pub fn act_arrive_time(&self) -> DateTime<Utc> {
@@ -110,13 +112,16 @@ impl Aircraft {
             tail,
             location: Location::Ground(location, *now - TimeDelta::hours(2)),
             type_: (typename, capacity),
-            next_claimed: None
+            next_claimed: None,
         }
     }
 
     pub fn takeoff(&mut self, flight_id: FlightId, time: DateTime<Utc>) -> ModelEventType {
         let Location::Ground(airport, since) = self.location else {
-            panic!("takeoff({}) called on {} when aircraft in the air", flight_id, self.tail)
+            panic!(
+                "takeoff({}) called on {} when aircraft in the air",
+                flight_id, self.tail
+            )
         };
         self.location = Location::InFlight(flight_id);
         self.next_claimed = None;
@@ -144,13 +149,21 @@ impl Aircraft {
             let flt = model.flight_read(flt_id);
             if flt.dest == airport {
                 if model.now() > flt.act_arrive_time() {
-                    debug_assert!(false, "DEBUG: why am I still flying? {}, {:?}", self.tail, &self.location);
+                    debug_assert!(
+                        false,
+                        "DEBUG: why am I still flying? {}, {:?}",
+                        self.tail, &self.location
+                    );
                 }
-                Some(max(model.now(), flt.act_arrive_time()) + model.config.aircraft_turnaround_time)
+                Some(
+                    max(model.now(), flt.act_arrive_time()) + model.config.aircraft_turnaround_time,
+                )
             } else {
                 None
             }
-        } else { None }
+        } else {
+            None
+        }
     }
 
     pub fn claim(&mut self, flight: FlightId) {
