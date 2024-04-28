@@ -38,6 +38,8 @@ def prep_bts(start_date, end_date, filename):
     flights["FL_DATE"] = pd.to_datetime(flights["FL_DATE"])
     flights = flights[flights['FL_DATE'].between(start_date, end_date)]
 
+    assert len(flights.index) > 0, 'empty flights dataframe! is the selected date range available in the selected dataset?'
+
     def dep_time_to_utc(row):
         hour = row["CRS_DEP_TIME"] // 100
         minute = row["CRS_DEP_TIME"] % 100
@@ -143,8 +145,7 @@ def add_initial_locations(acft, df):
         acft.reset_index(),
         how='left',
         on='N-NUMBER')
-    merge['TYPE'].fillna('B738', inplace=True)
-    merge['CAPACITY'].fillna(175, inplace=True)
+    merge.fillna({'CAPACITY': 175, 'TYPE': 'B738'}, inplace=True)
     return merge
 
 
@@ -289,23 +290,45 @@ def synthesize_crew(df, mult=1.4):
             _id += 1
     return pd.DataFrame(crew)
 
-if __name__ == '__main__':
+
+def seed(date: str, scenario_name: str, scenario_id: str, start_time: str, end_time: str, days: float, crew_mult=2, flight_source='T_ONTIME_REPORTING.csv'):
     # chosen for having zero cancellations that day (congrats southwest)
-    df = prep_bts('2024-01-28', '2024-01-28', '../truth/T_ONTIME_REPORTING.csv')
+    df = prep_bts(date, date, '../truth/' + flight_source)
     # for i in df['ORIGIN'].unique():
     #     print(i)
     acft = get_aircraft_types('../truth/MASTER.txt', '../truth/ACFTREF.txt')
-    writer = DatabaseWriter("test.db", "jan28-bts-import")
-    writer.write_scenario("January 28 BTS", "2024-01-28 00:00:00", "2024-01-29 20:00:00")
+    writer = DatabaseWriter("test.db", scenario_id)
+    writer.write_scenario(scenario_name, start_time, end_time)
     arpts = get_airline_airport_capacities(df)
     writer.write_airports(arpts)
     acft = add_initial_locations(acft, df)
     writer.write_aircraft(acft)
-    writer.write_crew(synthesize_crew(df, mult=2))
+    writer.write_crew(synthesize_crew(df, mult=crew_mult))
     writer.write_flights(df)
     writer.write_synthesized_itineraries(
         '../truth/T_T100D_MARKET_US_CARRIER_ONLY.csv',
         '../truth/T_T100D_SEGMENT_US_CARRIER_ONLY.csv',
-        'WN', days=1.5)
+        'WN', days=days)
     writer.conn.commit()
     writer.conn.close()
+
+if __name__ == '__main__':
+    # chosen for having zero cancellations that day (congrats southwest)
+    seed(
+        date='2024-01-28',
+        scenario_name='January 28 BTS',
+        scenario_id='jan28-bts-import',
+        start_time='2024-01-28 00:00:00',
+        end_time='2024-01-29 10:00:00',
+        days=1,
+        flight_source='T_ONTIME_REPORTING_2024.csv'
+    )
+    seed(
+        date='2022-12-22',
+        scenario_name='12-22 BTS',
+        scenario_id='2022-12-22-bts-import',
+        start_time='2022-12-22 00:00:00',
+        end_time='2022-12-23 10:00:00',
+        days=1,
+        flight_source='T_ONTIME_REPORTING_2022.csv'
+    )

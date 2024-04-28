@@ -15,7 +15,7 @@ pub type FlightId = u64;
 pub struct Flight {
     pub id: FlightId,
     pub flight_number: String,
-    pub aircraft_tail: String,
+    pub aircraft_tail: Option<String>,
     /// First element is piloting, the rest are deadheading
     pub crew: Vec<CrewId>,
     /// If empty, then this is a ferry flight
@@ -74,7 +74,7 @@ impl Flight {
     }
 
     pub fn reassign_aircraft(&mut self, tail: String) {
-        self.aircraft_tail = tail;
+        self.aircraft_tail = Some(tail);
     }
 
     pub fn reassign_crew(&mut self, id: Vec<CrewId>) {

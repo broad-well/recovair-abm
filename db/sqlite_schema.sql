@@ -54,7 +54,7 @@ CREATE TABLE crew(
 CREATE TABLE flights(
     id  INTEGER NOT NULL,
     flight_number   TEXT NOT NULL,
-    aircraft    TEXT NOT NULL,
+    aircraft    TEXT, -- if null, then never assigned
     origin  TEXT NOT NULL,
     dest    TEXT NOT NULL,
     pilot   INTEGER,

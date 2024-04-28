@@ -51,18 +51,22 @@ fn encode_model(mut cx: FunctionContext) -> JsResult<JsObject> {
             let flight = flight.read().unwrap();
             let obj = cx.empty_object();
             if !flight.cancelled {
-                object_set!(
-                    cx,
-                    obj,
-                    "start",
-                    cx.number(flight.depart_time.unwrap().timestamp() as f64 * 1000f64)
-                );
-                object_set!(
-                    cx,
-                    obj,
-                    "end",
-                    cx.number(flight.arrive_time.unwrap().timestamp() as f64 * 1000f64)
-                );
+                if let Some(depart_time) = flight.depart_time {
+                    object_set!(
+                        cx,
+                        obj,
+                        "start",
+                        cx.number(depart_time.timestamp() as f64 * 1000f64)
+                    );
+                }
+                if let Some(arrive_time) = flight.arrive_time {
+                    object_set!(
+                        cx,
+                        obj,
+                        "end",
+                        cx.number(arrive_time.timestamp() as f64 * 1000f64)
+                    );
+                }
             }
             object_set!(
                 cx,
@@ -84,7 +88,11 @@ fn encode_model(mut cx: FunctionContext) -> JsResult<JsObject> {
                 "flight_number",
                 cx.string(flight.flight_number.to_string())
             );
-            object_set!(cx, obj, "tail", cx.string(flight.aircraft_tail.to_string()));
+            if let Some(tail) = flight.aircraft_tail.clone() {
+                object_set!(cx, obj, "tail", cx.string(tail));
+            } else {
+                object_set!(cx, obj, "tail", cx.null());
+            }
             object_set!(cx, obj, "cancelled", cx.boolean(flight.cancelled));
             Ok(obj)
         }?;

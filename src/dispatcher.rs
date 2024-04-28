@@ -158,19 +158,19 @@ impl Dispatcher {
                         return;
                     }
                 }
-                // Is the assigned aircraft available?
+                // Is there an assigned aircraft, and is the assigned aircraft available?
                 {
                     let mut flt = self.model.flight_write(update.flight);
-                    let aircraft = self
-                        .model
-                        .fleet
-                        .get(&flt.aircraft_tail)
-                        .unwrap()
-                        .read()
-                        .unwrap();
-                    let ac_avail = aircraft.available_time(&*self.model, &flt);
-                    // println!("DEBUG: for flight {}, aircraft {} will be available at {} at {:?}",
-                    //     update.flight, flt.aircraft_tail, flt.origin, ac_avail);
+                    let ac_avail = if let Some(tail) = &flt.aircraft_tail {
+                        let aircraft = self
+                            .model
+                            .fleet
+                            .get(tail)
+                            .unwrap()
+                            .read()
+                            .unwrap();
+                        aircraft.available_time(&*self.model, &flt)
+                    } else { None };
                     if ac_avail
                         .map(|d| d > self.model.now() + self.aircraft_tolerance_before_reassign)
                         .unwrap_or(true)
@@ -212,7 +212,6 @@ impl Dispatcher {
                         } else {
                             // Can't deviate, must wait
                             // Use the fallback selector: Pick the aircraft that will be able to serve this flight the earliest
-                            drop(aircraft);
                             drop(flt); // Switch to a read so that Aircraft::available_time doesn't cause a deadlock
                             let flt = self.model.flight_read(update.flight);
                             send_event!(
@@ -222,6 +221,7 @@ impl Dispatcher {
                                     flt.aircraft_tail.clone()
                                 )
                             );
+                            // TODO consider incoming flights
                             let aircraft_cands: Vec<(String, DateTime<Utc>)> =
                                 if self.use_fallback_aircraft_selector {
                                     self.model

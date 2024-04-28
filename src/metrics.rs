@@ -1,26 +1,16 @@
 use std::{
-    cell::RefCell,
     cmp::max,
     collections::{BTreeMap, HashMap},
-    path::Path,
-    rc::Rc,
     sync::{mpsc, Weak},
     thread::{self, JoinHandle},
 };
 
 use chrono::{DateTime, Duration, TimeDelta, Utc};
-use neon::{
-    context::{Context, FunctionContext},
-    object::Object,
-    result::JsResult,
-    types::{JsObject, JsValue},
-};
-use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    aircraft::{Aircraft, Flight, FlightId},
-    airport::{Airport, AirportCode, PassengerDemand},
-    crew::{Crew, CrewId},
+    aircraft::FlightId,
+    airport::AirportCode,
+    crew::CrewId,
     model::Model,
 };
 
@@ -67,7 +57,7 @@ pub enum ModelEventType {
     // -- Decision points --
     // Sender: Dispatcher
     CrewSelection(FlightId, Vec<CrewId>),
-    AircraftSelection(FlightId, String),
+    AircraftSelection(FlightId, Option<String>),
 
     // -- Completion --
     SimulationComplete,
@@ -117,7 +107,7 @@ pub struct MetricsProcessor {
 
 impl MetricsProcessor {
     pub fn new(receiver: mpsc::Receiver<ModelEvent>) -> JoinHandle<MetricsProcessor> {
-        let mut proc = Self {
+        let proc = Self {
             receiver,
             model: Weak::new(),
             arrival_delays: Vec::new(),

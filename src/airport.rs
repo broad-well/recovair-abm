@@ -69,13 +69,14 @@ impl Airport {
         }
     }
 
+    /// Precondition: The given flight has been assigned to an aircraft
     pub fn mark_departure(&mut self, time: DateTime<Utc>, flight: &mut Flight, capacity: u16) {
         if time - self.departure_count.0 >= TimeDelta::hours(1) {
             self.departure_count = (time, 1);
         } else {
             self.departure_count.1 += 1;
         }
-        debug_assert!(self.fleet.remove(&flight.aircraft_tail));
+        debug_assert!(self.fleet.remove(flight.aircraft_tail.as_ref().unwrap()));
         self.crew.retain(|c| !flight.crew.contains(c));
         self.deduct_passengers(flight.id, flight.dest, capacity, &mut flight.passengers);
     }
@@ -100,7 +101,7 @@ impl Airport {
         } else {
             self.arrival_count.1 += 1;
         }
-        self.fleet.insert(flight.aircraft_tail.clone());
+        self.fleet.insert(flight.aircraft_tail.clone().unwrap());
         self.crew.extend(flight.crew.iter());
         self.accept_passengers(&flight.passengers);
     }

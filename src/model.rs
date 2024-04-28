@@ -69,7 +69,7 @@ impl Model {
         let mut flight = self.flights.get(&flight_id).unwrap().write().unwrap();
         let mut aircraft = self
             .fleet
-            .get(&flight.aircraft_tail)
+            .get(flight.aircraft_tail.as_ref().unwrap())
             .unwrap()
             .write()
             .unwrap();
@@ -96,7 +96,7 @@ impl Model {
         {
             let mut aircraft = self
                 .fleet
-                .get(&flight.aircraft_tail)
+                .get(flight.aircraft_tail.as_ref().unwrap())
                 .unwrap()
                 .write()
                 .unwrap();
@@ -124,10 +124,12 @@ impl Model {
         for crew in &flt.crew {
             self.crew[crew].write().unwrap().unclaim(flight_id);
         }
-        self.fleet[&flt.aircraft_tail]
-            .write()
-            .unwrap()
-            .unclaim(flight_id);
+        if let Some(tail) = &flt.aircraft_tail {
+            self.fleet[tail]
+                .write()
+                .unwrap()
+                .unclaim(flight_id);
+        }
         send_event!(self, ModelEventType::FlightCancelled(flight_id, reason));
     }
 
