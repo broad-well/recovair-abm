@@ -1,18 +1,19 @@
 extern crate chrono;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-use metrics::{DelayReason, MetricsProcessor};
+use metrics::MetricsProcessor;
 use model::Model;
 use neon::prelude::*;
 use scenario::{ScenarioLoader, SqliteScenarioLoader};
 
-pub mod aircraft;
-pub mod airport;
-pub mod crew;
-pub mod dispatcher;
-pub mod metrics;
-pub mod model;
-pub mod scenario;
+mod aircraft;
+mod airport;
+mod crew;
+mod dispatcher;
+mod metrics;
+mod model;
+mod scenario;
+mod export;
 
 macro_rules! try_load {
     ( $cx:expr, $load_op:expr ) => {{
@@ -183,9 +184,21 @@ fn run_model(mut cx: FunctionContext) -> JsResult<JsBox<FinishedModel>> {
     Ok(cx.boxed(FinishedModel { model, metrics }))
 }
 
+fn export_csvs(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    let model = cx.argument::<JsBox<FinishedModel>>(0)?;
+    let prefix = cx.argument::<JsString>(1)?.value(&mut cx);
+
+
+    if let Err(err) = export::export_finished_model(model.model.clone(), &prefix) {
+        return cx.throw_error(err.to_string());
+    }
+    Ok(cx.undefined())
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("runModel", run_model)?;
     cx.export_function("readModel", encode_model)?;
+    cx.export_function("exportModel", export_csvs)?;
     Ok(())
 }

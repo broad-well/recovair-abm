@@ -146,7 +146,7 @@ impl MetricsProcessor {
                     continue;
                 }
                 _ => {
-                    // println!("[{}] {:?}", event.time, event.data);
+                    println!("[{}] {:?}", event.time, event.data);
                 }
             }
 

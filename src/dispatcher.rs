@@ -7,7 +7,7 @@
 //!   - Delay flights if they lack resources
 //!   - Request departure from all `Disruption`s, and follow all delays given
 
-use std::{cmp::max, collections::BinaryHeap, ops::DerefMut, sync::Arc};
+use std::{collections::BinaryHeap, ops::DerefMut, sync::Arc};
 
 use crate::{
     aircraft::{Flight, FlightId},
