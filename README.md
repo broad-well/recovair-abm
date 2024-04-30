@@ -57,8 +57,8 @@ Runs the unit tests by calling `cargo test`. You can learn more about [adding te
 ## Getting RecovAir to run
 
 1. You need to generate necessary scenario data. Gather the following files and place them into a new folder at `db/truth`:
-    - `ACFTREF.txt` (Aircraft Reference File from the [FAA](https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download)
-    - `MASTER.txt` (Aircraft Registration Master File from the [FAA](https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download)
+    - `ACFTREF.txt` (Aircraft Reference File from the [FAA](https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download))
+    - `MASTER.txt` (Aircraft Registration Master File from the [FAA](https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download))
     - `T_MASTER_CORD.csv` (Aviation Support Tables: Master Coordinate from the [BTS](https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FLL&QO_fu146_anzr=N8vn6v10%20f722146%20gnoyr5))
     - `T_ONTIME_REPORTING.csv` (On-Time: Reporting Carrier On-Time Performance from the [BTS](https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FGJ&QO_fu146_anzr=b0-gvzr))
     - `T_T100D_MARKET_US_CARRIER_ONLY.csv` (T-100 Domestic Market from the [BTS](https://www.transtats.bts.gov/DL_SelectFields.asp?gnoyr_VQ=FIL&QO_fu146_anzr=Nv4%20Pn44vr45))

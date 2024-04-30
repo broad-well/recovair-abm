@@ -128,6 +128,10 @@ impl Dispatcher {
             }
             self.update_flight(update);
         }
+        
+        for update in &self.update_queue {
+            self.model.cancel_flight(update.flight, CancelReason::DelayTimedOut);
+        }
         send_event!(self.model, ModelEventType::SimulationComplete);
     }
     /// Check the status of the given `flight`.
@@ -465,16 +469,18 @@ impl Dispatcher {
                 {
                     let (clear, disruption) = self.model.request_departure(update.flight);
                     if let Some(later) = clear.time() {
-                        // Disruption delayed the flight
-                        Self::delay_departure(
-                            self.model.now(),
-                            &self.model,
-                            update.flight,
-                            *later - self.model.now(),
-                            DelayReason::Disrupted(disruption.unwrap().read().unwrap().describe()),
-                            &mut self.update_queue,
-                        );
-                        return;
+                        if later > &self.model.now() {
+                            // Disruption delayed the flight
+                            Self::delay_departure(
+                                self.model.now(),
+                                &self.model,
+                                update.flight,
+                                *later - self.model.now(),
+                                DelayReason::Disrupted(disruption.unwrap().read().unwrap().describe()),
+                                &mut self.update_queue,
+                            );
+                            return;
+                        }
                     }
                 }
                 let origin = {
@@ -586,6 +592,7 @@ impl Dispatcher {
         reason: DelayReason,
         queue: &mut BinaryHeap<DispatcherUpdate>,
     ) {
+        debug_assert!(duration > TimeDelta::zero());
         {
             let sched_depart = model.flight_read(id).sched_depart;
             if now + duration > sched_depart + model.config.max_delay {

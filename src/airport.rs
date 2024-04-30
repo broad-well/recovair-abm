@@ -248,7 +248,8 @@ pub struct SlotManager<T: PartialEq> {
 
 impl<T: PartialEq> SlotManager<T> {
     pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, hourly_rate: u16) -> Self {
-        let num_slots = (end - start).num_hours() + 1;
+        debug_assert_ne!(hourly_rate, 0);
+        let num_slots = (end - start).num_hours();
         let slots_assigned: Vec<Vec<T>> = std::iter::repeat_with(|| Vec::new())
             .take(num_slots as usize)
             .collect();
@@ -288,7 +289,7 @@ impl<T: PartialEq> SlotManager<T> {
     }
 
     pub fn contains(&self, time: &DateTime<Utc>) -> bool {
-        *time >= self.start && *time <= self.end
+        *time >= self.start && *time < self.end
     }
 
     fn time_to_index(&self, time: &DateTime<Utc>) -> usize {
@@ -296,9 +297,12 @@ impl<T: PartialEq> SlotManager<T> {
     }
 
     fn slot_time_estimate(&self, i: usize, si: usize) -> DateTime<Utc> {
-        self.start
+        let result = self.start
             + TimeDelta::hours(i as i64)
-            + TimeDelta::minutes(((si as f32) / (self.max_slot_size as f32) * 60f32).floor() as i64)
+            + TimeDelta::minutes(((si as f32) / (self.max_slot_size as f32) * 60f32).floor() as i64);
+        debug_assert!(result >= self.start);
+        debug_assert!(result <= self.end, "result={:?}, end={:?}, i={} si={} slots_assigned has {} item(s)", result, self.end, i, si, self.slots_assigned.len());
+        result
     }
 }
 
@@ -337,7 +341,7 @@ impl Disruption for GroundDelayProgram {
         if self.slots.slotted_at(&arrive, &flight.id) {
             Clearance::Cleared
         } else if let Some(edct) = self.slots.allocate_slot(&arrive, flight.id) {
-            Clearance::EDCT(edct)
+            Clearance::EDCT(std::cmp::max(model.now(), edct))
         } else {
             // Can't fit during this GDP. check later
             Clearance::Deferred(*self.end())
@@ -383,9 +387,17 @@ impl Disruption for DepartureRateLimit {
         if self.slots.slotted_at(&model.now(), &flight.id) {
             Clearance::Cleared
         } else if let Some(edct) = self.slots.allocate_slot(&model.now(), flight.id) {
-            Clearance::EDCT(edct)
+            if edct == model.now() {
+                Clearance::Cleared
+            } else {
+                Clearance::EDCT(std::cmp::max(model.now(), edct))
+            }
         } else {
-            Clearance::Deferred(self.slots.end)
+            if self.slots.end == model.now() {
+                Clearance::Cleared
+            } else {
+                Clearance::Deferred(self.slots.end)
+            }
         }
     }
     fn describe(&self) -> String {
