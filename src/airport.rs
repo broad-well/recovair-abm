@@ -248,7 +248,6 @@ pub struct SlotManager<T: PartialEq> {
 
 impl<T: PartialEq> SlotManager<T> {
     pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, hourly_rate: u16) -> Self {
-        debug_assert_ne!(hourly_rate, 0);
         let num_slots = (end - start).num_hours();
         let slots_assigned: Vec<Vec<T>> = std::iter::repeat_with(|| Vec::new())
             .take(num_slots as usize)
