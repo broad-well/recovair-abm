@@ -56,7 +56,7 @@ Runs the unit tests by calling `cargo test`. You can learn more about [adding te
 
 ## Getting RecovAir to run
 
-1. You need to generate necessary scenario data. Gather the following files and place them into a new folder at `db/truth`:
+1. You need to generate necessary scenario data. Gather the following files and place them into a new folder at `db/truth`. You may alternatively download [the data we used](https://drive.google.com/file/d/1iTFs9z6KqEkJUOf2Yti_MC3boSwfl4GY/view?usp=sharing).
     - `ACFTREF.txt` (Aircraft Reference File from the [FAA](https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download))
     - `MASTER.txt` (Aircraft Registration Master File from the [FAA](https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download))
     - `T_MASTER_CORD.csv` (Aviation Support Tables: Master Coordinate from the [BTS](https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FLL&QO_fu146_anzr=N8vn6v10%20f722146%20gnoyr5))
