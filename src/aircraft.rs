@@ -37,20 +37,9 @@ impl PartialEq for Flight {
 }
 
 impl Flight {
-    #[inline]
-    pub fn in_flight(&self) -> bool {
-        self.depart_time.is_some() && self.arrive_time.is_none()
-    }
-
-    #[inline]
-    pub fn is_ferry_flight(&self) -> bool {
-        self.passengers.is_empty()
-    }
-
     pub fn est_arrive_time(&self, depart: &DateTime<Utc>) -> DateTime<Utc> {
         *depart
-            + (self.sched_arrive - self.sched_depart
-                + self.accum_delay.unwrap_or(TimeDelta::zero()))
+            + (self.est_duration() + self.accum_delay.unwrap_or(TimeDelta::zero()))
     }
 
     pub fn act_arrive_time(&self) -> DateTime<Utc> {
@@ -59,6 +48,11 @@ impl Flight {
                 .depart_time
                 .expect("Don't call act_arrive_time on a flight that has not departed"),
         )
+    }
+
+    #[inline]
+    pub fn est_duration(&self) -> TimeDelta {
+        self.sched_arrive - self.sched_depart
     }
 
     pub fn takeoff(&mut self, time: DateTime<Utc>) {

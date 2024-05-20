@@ -11,8 +11,7 @@ use rusqlite::Connection;
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
     airport::{
-        Airport, AirportCode, DepartureRateLimit, Disruption, GroundDelayProgram, PassengerDemand,
-        SlotManager,
+        Airport, AirportCode, DepartureRateLimit, Disruption, DisruptionIndex, GroundDelayProgram, PassengerDemand, SlotManager
     },
     crew::{Crew, CrewId},
     dispatcher::{strategies, Dispatcher},
@@ -66,7 +65,7 @@ impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
             fleet: HashMap::new(),
             crew: HashMap::new(),
             flights: HashMap::new(),
-            disruptions: Vec::new(),
+            disruptions: DisruptionIndex::new(),
             _now: Arc::new(RwLock::new(now)),
             end,
             publisher: tx,
@@ -308,7 +307,7 @@ impl SqliteScenarioLoader {
                     ))
                 }
             };
-            model.disruptions.push(disruption);
+            model.disruptions.add_disruption(disruption);
         }
         Ok(())
     }

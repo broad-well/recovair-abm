@@ -1,6 +1,6 @@
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
-    airport::{Airport, AirportCode, Clearance, Disruption},
+    airport::{Airport, AirportCode, Clearance, Disruption, DisruptionIndex},
     crew::{Crew, CrewId},
     metrics::{CancelReason, MetricsProcessor, ModelEvent, ModelEventType},
 };
@@ -27,7 +27,7 @@ pub struct Model {
     pub crew: HashMap<CrewId, Arc<RwLock<Crew>>>,
     pub airports: HashMap<AirportCode, Arc<RwLock<Airport>>>,
     pub flights: HashMap<FlightId, Arc<RwLock<Flight>>>,
-    pub disruptions: Vec<Arc<RwLock<dyn Disruption>>>,
+    pub disruptions: DisruptionIndex,
     pub publisher: mpsc::Sender<ModelEvent>,
 
     pub metrics: RwLock<Option<JoinHandle<MetricsProcessor>>>,
@@ -138,8 +138,8 @@ impl Model {
         flight_id: FlightId,
     ) -> (Clearance, Option<Arc<RwLock<dyn Disruption>>>) {
         let flt = self.flights.get(&flight_id).unwrap();
-        let effective_disruption = self
-            .disruptions
+        let disruptions = self.disruptions.lookup(&flt.read().unwrap());
+        let effective_disruption = disruptions
             .iter()
             .map(|disruption| {
                 (
@@ -153,6 +153,9 @@ impl Model {
             .max_by(|a, b| a.1.cmp(&b.1));
 
         if let Some((disruption, clearance)) = effective_disruption {
+            for d in disruptions {
+                d.write().unwrap().void_depart_clearance(&flt.read().unwrap(), &self.now(), self);
+            }
             (clearance, Some(disruption))
         } else {
             (Clearance::Cleared, None)
@@ -165,8 +168,8 @@ impl Model {
         flight_id: FlightId,
     ) -> (Clearance, Option<Arc<RwLock<dyn Disruption>>>) {
         let flt = self.flights.get(&flight_id).unwrap();
-        let effective_disruption = self
-            .disruptions
+        let disruptions = self.disruptions.lookup(&flt.read().unwrap());
+        let effective_disruption = disruptions
             .iter()
             .map(|disruption| {
                 (
@@ -180,6 +183,9 @@ impl Model {
             .max_by(|a, b| a.1.cmp(&b.1));
 
         if let Some((disruption, clearance)) = effective_disruption {
+            for d in disruptions {
+                d.write().unwrap().void_arrive_clearance(&flt.read().unwrap(), &self.now(), self);
+            }
             (clearance, Some(disruption))
         } else {
             (Clearance::Cleared, None)
