@@ -97,9 +97,9 @@ def prep_bts(start_date, end_date, filename):
         if pd.isna(row):
             return pd.NA
         return row.hour
-    
-    flights['ActualDepTimeUTC'] = flights.apply(get_actual_dep_time, axis=1)
-    flights['ActualArrTimeUTC'] = flights.apply(get_actual_arr_time, axis=1)
+
+    flights['ActualDepTimeUTC'] = flights.apply(get_actual_dep_time, axis=1).astype(dtype='O')
+    flights['ActualArrTimeUTC'] = flights.apply(get_actual_arr_time, axis=1).astype(dtype='O')
 
     flights['ActualDepHourUTC'] = flights['ActualDepTimeUTC'].apply(get_optional_hour)
     flights['ActualArrHourUTC'] = flights['ActualArrTimeUTC'].apply(get_optional_hour)
@@ -109,10 +109,12 @@ def prep_bts(start_date, end_date, filename):
 class OutcomeComparison:
     def __init__(self, actual: pd.DataFrame, simulated: pd.DataFrame) -> None:
         self.actual = actual
+        self.actual['duration'] = self.actual['ActualArrTimeUTC'] - self.actual['ActualDepTimeUTC']
         self.simulated = simulated
         self.simulated['ARR_DELAY'] = (self.simulated['arr_time'] - self.simulated['sched_arr']).dt.total_seconds() // 60
         self.simulated['DEP_DELAY'] = (self.simulated['dep_time'] - self.simulated['sched_dep']).dt.total_seconds() // 60
         self.simulated.rename(columns={'cancelled': 'CANCELLED'}, inplace=True)
+        self.simulated['duration'] = self.simulated['arr_time'] - self.simulated['dep_time']
         self.merged = pd.merge(self.actual, self.simulated, on='id', suffixes=['_act', '_sim'])
 
     def compare_otp(self):
@@ -120,6 +122,9 @@ class OutcomeComparison:
     
     def compare_total_delay(self):
         return self.compare(lambda x: x['DEP_DELAY'].sum())
+    
+    def compare_total_hours_flown(self):
+        return self.compare(lambda x: x['duration'].dropna().sum().total_seconds() / 3600)
     
     def plot_actual_vs_sim_delay(self):
         # Requires each to have an `id` column.

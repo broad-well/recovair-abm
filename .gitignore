@@ -4,3 +4,6 @@ index.node
 **/.DS_Store
 npm-debug.log*
 .venv
+*.log
+/*.csv
+__pycache__/

@@ -136,60 +136,77 @@ impl Model {
     pub fn request_departure(
         &self,
         flight_id: FlightId,
-    ) -> (Clearance, Option<Arc<RwLock<dyn Disruption>>>) {
+    ) -> Option<(Clearance, Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>)> {
         let flt = self.flights.get(&flight_id).unwrap();
         let disruptions = self.disruptions.lookup(&flt.read().unwrap());
-        let effective_disruption = disruptions
-            .iter()
-            .map(|disruption| {
-                (
-                    disruption.clone(),
-                    disruption
-                        .write()
-                        .unwrap()
-                        .request_depart(&flt.read().unwrap(), self),
-                )
-            })
-            .max_by(|a, b| a.1.cmp(&b.1));
 
-        if let Some((disruption, clearance)) = effective_disruption {
-            for d in disruptions {
-                d.write().unwrap().void_depart_clearance(&flt.read().unwrap(), &self.now(), self);
+        if let Some((earliest, reason_breakdown)) = self.reserve_earliest(
+            &disruptions,
+            Vec::new(),
+            &self.now(),
+            None,
+            |dis: Arc<RwLock<dyn Disruption>>, time: &DateTime<Utc>|
+                dis.write().unwrap().request_depart(&flt.read().unwrap(), self, time),
+            |dis: Arc<RwLock<dyn Disruption>>, time: &DateTime<Utc>|
+                dis.write().unwrap().void_depart_clearance(&flt.read().unwrap(), time, self)) {
+            
+            if earliest <= self.now() {
+                Some((Clearance::Cleared, Vec::new()))
+            } else {
+                Some((Clearance::EDCT(earliest), reason_breakdown))
             }
-            (clearance, Some(disruption))
-        } else {
-            (Clearance::Cleared, None)
-        }
+        } else { None }
     }
 
-    // TODO reduce duplication
     pub fn request_arrival(
         &self,
         flight_id: FlightId,
-    ) -> (Clearance, Option<Arc<RwLock<dyn Disruption>>>) {
+    ) -> Option<(Clearance, Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>)> {
         let flt = self.flights.get(&flight_id).unwrap();
         let disruptions = self.disruptions.lookup(&flt.read().unwrap());
-        let effective_disruption = disruptions
-            .iter()
-            .map(|disruption| {
-                (
-                    disruption.clone(),
-                    disruption
-                        .write()
-                        .unwrap()
-                        .request_arrive(&flt.read().unwrap(), self),
-                )
-            })
-            .max_by(|a, b| a.1.cmp(&b.1));
 
-        if let Some((disruption, clearance)) = effective_disruption {
-            for d in disruptions {
-                d.write().unwrap().void_arrive_clearance(&flt.read().unwrap(), &self.now(), self);
+        if let Some((earliest, reason_breakdown)) = self.reserve_earliest(
+            &disruptions,
+            Vec::new(),
+            &self.now(),
+            None,
+            |dis: Arc<RwLock<dyn Disruption>>, time: &DateTime<Utc>|
+                dis.write().unwrap().request_arrive(&flt.read().unwrap(), self, time),
+            |dis: Arc<RwLock<dyn Disruption>>, time: &DateTime<Utc>|
+                dis.write().unwrap().void_arrive_clearance(&flt.read().unwrap(), time, self)) {
+
+            if earliest <= self.now() {
+                Some((Clearance::Cleared, Vec::new()))
+            } else {
+                Some((Clearance::EDCT(earliest), reason_breakdown))
             }
-            (clearance, Some(disruption))
-        } else {
-            (Clearance::Cleared, None)
+        } else { None }
+    }
+
+    /// Find the earliest time to execute a flight action that is accepted by all disruptions
+    fn reserve_earliest<F, V>(&self, disruptions: &Vec<Arc<RwLock<dyn Disruption>>>, mut reasons: Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>, starting: &DateTime<Utc>, already_slotted: Option<usize>, request: F, void: V) -> Option<(DateTime<Utc>, Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>)>
+        where F: Fn(Arc<RwLock<dyn Disruption>>, &DateTime<Utc>) -> Clearance, V: Fn(Arc<RwLock<dyn Disruption>>, &DateTime<Utc>) {
+        let mut cleared_indices: Vec<usize> = Vec::with_capacity(disruptions.len());
+        for (i, disruption) in disruptions.iter().enumerate() {
+            if Some(i) != already_slotted {
+                if let Some(later) = request(disruption.clone(), starting).time() {
+                    if *later > *starting {
+                        for index in cleared_indices {
+                            void(disruptions[index].clone(), starting);
+                        }
+                        if *later >= self.now() + self.config.max_delay {
+                            println!("reserve_earliest exceeded max_delay! later={} reasons={:?}", later, &reasons);
+                            return None;
+                        }
+                        reasons.push((disruption.clone(), *later - *starting));
+                        return self.reserve_earliest(disruptions, reasons, later, Some(i), request, void);
+                    }
+                }
+            }
+            cleared_indices.push(i);
         }
+        debug_assert_eq!(cleared_indices.len(), disruptions.len());
+        Some((*starting, reasons))
     }
 }
 

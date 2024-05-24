@@ -121,9 +121,9 @@ impl Airport {
                 continue;
             }
             let taking = min(demand.count, capacity as u32);
-            if taking == 0 {
-                println!("{} {}", demand.count, capacity);
-            }
+            // if taking == 0 {
+            //     println!("{} {}", demand.count, capacity);
+            // }
             onboard.push(demand.split_off(taking, flight));
             capacity -= taking as i32;
         }
@@ -195,6 +195,12 @@ impl Clearance {
             Self::Deferred(dt) => Some(dt),
         }
     }
+
+    #[inline]
+    pub fn cleared_at(&self, time: &DateTime<Utc>) -> bool {
+        self.time()
+            .map_or(true, |t| t <= time)
+    }
 }
 
 impl Ord for Clearance {
@@ -231,12 +237,12 @@ impl PartialOrd for Clearance {
 pub trait Disruption: std::fmt::Debug + Send + Sync {
     /// By design, we should call this AFTER ensuring that all the resources are present for the flight
     /// (aircraft, crew, passengers)
-    fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance;
-    fn request_arrive(&mut self, _flight: &Flight, _model: &Model) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>) -> Clearance;
+    fn request_arrive(&mut self, _flight: &Flight, _model: &Model, _time: &DateTime<Utc>) -> Clearance {
         Clearance::Cleared
     }
     fn void_depart_clearance(&mut self, flight: &Flight, time: &DateTime<Utc>, model: &Model);
-    fn void_arrive_clearance(&mut self, flight: &Flight, time: &DateTime<Utc>, model: &Model) {}
+    fn void_arrive_clearance(&mut self, _flight: &Flight, _time: &DateTime<Utc>, _model: &Model) {}
 
     fn describe(&self) -> String;
 
@@ -286,11 +292,9 @@ impl<T: PartialEq + Debug> SlotManager<T> {
         }
         // New slot
         if let Some(first_open) = first_open {
-            println!("{:?} accepted {:?}", self.slots_assigned, &item);
             self.slots_assigned[first_open].push(item);
             Some(self.slot_time_estimate(first_open, self.slots_assigned[first_open].len() - 1))
         } else {
-            println!("{:?} rejected {:?}", self.slots_assigned, &item);
             None
         }
     }
@@ -343,11 +347,11 @@ impl GroundDelayProgram {
 }
 
 impl Disruption for GroundDelayProgram {
-    fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>) -> Clearance {
         if flight.dest != self.site {
             return Clearance::Cleared;
         }
-        let arrive = flight.est_arrive_time(&model.now());
+        let arrive = flight.est_arrive_time(time);
         if !self.slots.contains(&arrive) {
             return Clearance::Cleared;
         }
@@ -358,16 +362,21 @@ impl Disruption for GroundDelayProgram {
         if self.slots.slotted_at(&arrive, &flight.id) {
             Clearance::Cleared
         } else if let Some(edct) = self.slots.allocate_slot(&arrive, flight.id) {
+            // println!("{} slotted {} at EDCT {:?}", self.describe(), flight.id, edct);
             Clearance::EDCT(std::cmp::max(model.now(), edct) - flight.est_duration())
         } else {
             // Can't fit during this GDP. check later
+            // println!("{} REJECTED {} (slots = {:?})", self.describe(), flight.id, self.slots.slots_assigned);
             Clearance::Deferred(*self.end() - flight.est_duration())
         }
     }
 
     fn void_depart_clearance(&mut self, flight: &Flight, time: &DateTime<Utc>, _model: &Model) {
-        if self.slots.contains(time) {
-            self.slots.drop_slot(time, flight.id);
+        let slot_time = flight.est_arrive_time(time);
+        if self.slots.contains(&slot_time) {
+            // println!("{} VOIDED departure clearance for flight {} at {:?} (slots used to be {:?})", self.describe(), flight.id, time, self.slots.slots_assigned);
+            self.slots.drop_slot(&slot_time, flight.id);
+            // println!("^^ slots are now {:?}", self.slots.slots_assigned);
         }
     }
 
@@ -407,23 +416,25 @@ pub struct DepartureRateLimit {
 }
 
 impl Disruption for DepartureRateLimit {
-    fn request_depart(&mut self, flight: &Flight, model: &Model) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>) -> Clearance {
         if flight.origin != self.site {
             return Clearance::Cleared;
         }
-        if !self.slots.contains(&model.now()) {
+        if !self.slots.contains(time) {
             return Clearance::Cleared;
         }
 
-        if self.slots.slotted_at(&model.now(), &flight.id) {
+        if self.slots.slotted_at(time, &flight.id) {
             Clearance::Cleared
-        } else if let Some(edct) = self.slots.allocate_slot(&model.now(), flight.id) {
-            if edct == model.now() {
+        } else if let Some(edct) = self.slots.allocate_slot(time, flight.id) {
+            // println!("{} slotted {} at EDCT {:?}", self.describe(), flight.id, edct);
+            if edct <= model.now() {
                 Clearance::Cleared
             } else {
                 Clearance::EDCT(std::cmp::max(model.now(), edct))
             }
         } else {
+            // println!("{} REJECTED {} (slots = {:?})", self.describe(), flight.id, self.slots.slots_assigned);
             if self.slots.end == model.now() {
                 Clearance::Cleared
             } else {
@@ -434,7 +445,9 @@ impl Disruption for DepartureRateLimit {
 
     fn void_depart_clearance(&mut self, flight: &Flight, time: &DateTime<Utc>, _model: &Model) {
         if self.slots.contains(time) {
+            // println!("{} VOIDED departure clearance for flight {} at {:?} (slots used to be {:?})", self.describe(), flight.id, time, self.slots.slots_assigned);
             self.slots.drop_slot(time, flight.id);
+            // println!("^^ slots are now {:?}", self.slots.slots_assigned);
         }
     }
 
@@ -495,6 +508,7 @@ impl DisruptionIndex {
     }
 
     pub fn lookup(&self, flight: &Flight) -> Vec<Arc<RwLock<dyn Disruption>>> {
+        // Do not use the flight's departure time (look up result is reused for the disruption walk)
         let empty = Vec::new();
         let origin_disruptions = self.dep_index.get(&flight.origin).unwrap_or(&empty);
         let dest_disruptions = self.arr_index.get(&flight.dest).unwrap_or(&empty);

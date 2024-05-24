@@ -25,6 +25,7 @@ pub struct Flight {
     pub cancelled: bool,
     pub depart_time: Option<DateTime<Utc>>,
     pub arrive_time: Option<DateTime<Utc>>,
+    pub dep_delay: TimeDelta,
     pub accum_delay: Option<TimeDelta>,
     pub sched_depart: DateTime<Utc>,
     pub sched_arrive: DateTime<Utc>,
@@ -37,6 +38,11 @@ impl PartialEq for Flight {
 }
 
 impl Flight {
+    #[inline]
+    pub fn took_off(&self) -> bool {
+        self.depart_time.is_some()
+    }
+
     pub fn est_arrive_time(&self, depart: &DateTime<Utc>) -> DateTime<Utc> {
         *depart
             + (self.est_duration() + self.accum_delay.unwrap_or(TimeDelta::zero()))
@@ -63,12 +69,22 @@ impl Flight {
         self.arrive_time = Some(time);
     }
 
+    pub fn delay_departure(&mut self, delay: TimeDelta) {
+        self.dep_delay += delay;
+    }
+
     pub fn delay_arrival(&mut self, duration: TimeDelta) {
         self.accum_delay = Some(self.accum_delay.unwrap_or(TimeDelta::zero()) + duration);
     }
 
-    pub fn reassign_aircraft(&mut self, tail: String) {
-        self.aircraft_tail = Some(tail);
+    pub fn reassign_aircraft(&mut self, tail: String) -> bool {
+        debug_assert!(!self.took_off());
+        if self.aircraft_tail.as_ref() == Some(&tail) {
+            false
+        } else {
+            self.aircraft_tail = Some(tail);
+            true
+        }
     }
 
     pub fn reassign_crew(&mut self, id: Vec<CrewId>) {
@@ -142,13 +158,7 @@ impl Aircraft {
         } else if let Location::InFlight(flt_id) = self.location {
             let flt = model.flight_read(flt_id);
             if flt.dest == airport {
-                if model.now() > flt.act_arrive_time() {
-                    debug_assert!(
-                        false,
-                        "DEBUG: why am I still flying? {}, {:?}",
-                        self.tail, &self.location
-                    );
-                }
+                // flt.act_arrive_time() may be before model.now() due to arrival delays
                 Some(
                     max(model.now(), flt.act_arrive_time()) + model.config.aircraft_turnaround_time,
                 )

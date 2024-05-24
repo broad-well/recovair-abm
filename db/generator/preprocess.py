@@ -366,25 +366,36 @@ def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_
 
 if __name__ == '__main__':
     # chosen for having zero cancellations that day (congrats southwest)
-    seed(
-        date='2024-01-28',
-        airport_capacity_source_start='2024-01-01',
-        airport_capacity_source_end='2024-01-31',
-        scenario_name='January 28 BTS',
-        scenario_id='jan28-bts-import',
-        start_time='2024-01-28 00:00:00',
-        end_time='2024-01-29 10:00:00',
-        days=1,
-        flight_source='T_ONTIME_REPORTING_2024.csv'
-    )
+    # seed(
+    #     date='2024-01-28',
+    #     airport_capacity_source_start='2024-01-01',
+    #     airport_capacity_source_end='2024-01-31',
+    #     scenario_name='January 28 BTS',
+    #     scenario_id='jan28-bts-import',
+    #     start_time='2024-01-28 00:00:00',
+    #     end_time='2024-01-29 10:00:00',
+    #     days=1,
+    #     flight_source='T_ONTIME_REPORTING_2024.csv'
+    # )
     seed(
         date='2022-12-22',
         airport_capacity_source_start='2022-12-01',
         airport_capacity_source_end='2022-12-31',
-        scenario_name='12-22 BTS',
-        scenario_id='2022-12-22-bts-import',
+        scenario_name='12-22 BTS (no disruptions)',
+        scenario_id='2022-12-22-bts-import-nodisrupt',
         start_time='2022-12-22 00:00:00',
         end_time='2022-12-23 10:00:00',
         days=1,
         flight_source='T_ONTIME_REPORTING_2022.csv'
     )
+    # seed(
+    #     date='2024-01-28',
+    #     airport_capacity_source_start='2024-01-01',
+    #     airport_capacity_source_end='2024-01-31',
+    #     scenario_name='January 28 BTS',
+    #     scenario_id='2024-01-28-bts-import',
+    #     start_time='2024-01-28 00:00:00',
+    #     end_time='2024-01-29 10:00:00',
+    #     days=1,
+    #     flight_source='T_ONTIME_REPORTING_2024.csv'
+    # )

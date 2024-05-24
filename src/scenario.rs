@@ -107,6 +107,7 @@ impl ScenarioLoader<ScenarioLoaderError> for SqliteScenarioLoader {
             use_fallback_aircraft_selector: true, // TODO add adjuster
             crew_tolerance_before_reassign: TimeDelta::minutes(row.get("crew_reassign_tolerance")?),
             update_queue: BinaryHeap::new(),
+            aircraft_reassigned: HashSet::new(),
         })
     }
 }
@@ -206,6 +207,7 @@ impl SqliteScenarioLoader {
                 cancelled: false,
                 depart_time: None,
                 arrive_time: None,
+                dep_delay: TimeDelta::zero(),
                 accum_delay: None,
                 sched_depart: Self::parse_time(&row.get::<&str, String>("sched_depart")?)?,
                 sched_arrive: Self::parse_time(&row.get::<&str, String>("sched_arrive")?)?,
