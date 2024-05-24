@@ -1,6 +1,10 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
-    cmp::{min, Ordering}, collections::{HashMap, HashSet}, fmt::Debug, iter::empty, sync::{Arc, RwLock}
+    cmp::{min, Ordering},
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    iter::empty,
+    sync::{Arc, RwLock},
 };
 
 use crate::{
@@ -198,8 +202,7 @@ impl Clearance {
 
     #[inline]
     pub fn cleared_at(&self, time: &DateTime<Utc>) -> bool {
-        self.time()
-            .map_or(true, |t| t <= time)
+        self.time().map_or(true, |t| t <= time)
     }
 }
 
@@ -237,8 +240,14 @@ impl PartialOrd for Clearance {
 pub trait Disruption: std::fmt::Debug + Send + Sync {
     /// By design, we should call this AFTER ensuring that all the resources are present for the flight
     /// (aircraft, crew, passengers)
-    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>) -> Clearance;
-    fn request_arrive(&mut self, _flight: &Flight, _model: &Model, _time: &DateTime<Utc>) -> Clearance {
+    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>)
+        -> Clearance;
+    fn request_arrive(
+        &mut self,
+        _flight: &Flight,
+        _model: &Model,
+        _time: &DateTime<Utc>,
+    ) -> Clearance {
         Clearance::Cleared
     }
     fn void_depart_clearance(&mut self, flight: &Flight, time: &DateTime<Utc>, model: &Model);
@@ -322,7 +331,15 @@ impl<T: PartialEq + Debug> SlotManager<T> {
             + TimeDelta::hours(i as i64)
             + TimeDelta::minutes(((si as f32) / (self.max_slot_size as f32) * 60f32).floor() as i64);
         debug_assert!(result >= self.start);
-        debug_assert!(result <= self.end, "result={:?}, end={:?}, i={} si={} slots_assigned has {} item(s)", result, self.end, i, si, self.slots_assigned.len());
+        debug_assert!(
+            result <= self.end,
+            "result={:?}, end={:?}, i={} si={} slots_assigned has {} item(s)",
+            result,
+            self.end,
+            i,
+            si,
+            self.slots_assigned.len()
+        );
         result
     }
 }
@@ -347,7 +364,12 @@ impl GroundDelayProgram {
 }
 
 impl Disruption for GroundDelayProgram {
-    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>) -> Clearance {
+    fn request_depart(
+        &mut self,
+        flight: &Flight,
+        model: &Model,
+        time: &DateTime<Utc>,
+    ) -> Clearance {
         if flight.dest != self.site {
             return Clearance::Cleared;
         }
@@ -405,7 +427,9 @@ impl Disruption for GroundDelayProgram {
         vec![self.site]
     }
 
-    fn departure_airports_affected(&self) -> Vec<AirportCode> { Vec::new() }
+    fn departure_airports_affected(&self) -> Vec<AirportCode> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug)]
@@ -416,7 +440,12 @@ pub struct DepartureRateLimit {
 }
 
 impl Disruption for DepartureRateLimit {
-    fn request_depart(&mut self, flight: &Flight, model: &Model, time: &DateTime<Utc>) -> Clearance {
+    fn request_depart(
+        &mut self,
+        flight: &Flight,
+        model: &Model,
+        time: &DateTime<Utc>,
+    ) -> Clearance {
         if flight.origin != self.site {
             return Clearance::Cleared;
         }
@@ -455,7 +484,7 @@ impl Disruption for DepartureRateLimit {
         if let Some(reason) = &self.reason {
             format!(
                 "Departure delay program at {} from {} to {} (flights depart at a rate of {} per hour) due to {}",
-                self.site, self.slots.start, self.slots.end, 
+                self.site, self.slots.start, self.slots.end,
                 self.slots.max_slot_size, reason
             )
         } else {
@@ -474,18 +503,21 @@ impl Disruption for DepartureRateLimit {
     fn departure_airports_affected(&self) -> Vec<AirportCode> {
         vec![self.site]
     }
-    
 }
 
 pub struct DisruptionIndex {
     disruptions: Vec<Arc<RwLock<dyn Disruption>>>,
     dep_index: HashMap<AirportCode, Vec<usize>>,
-    arr_index: HashMap<AirportCode, Vec<usize>>
+    arr_index: HashMap<AirportCode, Vec<usize>>,
 }
 
 impl DisruptionIndex {
     pub fn new() -> Self {
-        Self { disruptions: Vec::new(), dep_index: HashMap::new(), arr_index: HashMap::new() }
+        Self {
+            disruptions: Vec::new(),
+            dep_index: HashMap::new(),
+            arr_index: HashMap::new(),
+        }
     }
 
     #[inline]
@@ -512,7 +544,8 @@ impl DisruptionIndex {
         let empty = Vec::new();
         let origin_disruptions = self.dep_index.get(&flight.origin).unwrap_or(&empty);
         let dest_disruptions = self.arr_index.get(&flight.dest).unwrap_or(&empty);
-        origin_disruptions.iter()
+        origin_disruptions
+            .iter()
             .chain(dest_disruptions.iter())
             .map(|index| self.disruptions[*index].clone())
             .collect()

@@ -11,7 +11,8 @@ use rusqlite::Connection;
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
     airport::{
-        Airport, AirportCode, DepartureRateLimit, Disruption, DisruptionIndex, GroundDelayProgram, PassengerDemand, SlotManager
+        Airport, AirportCode, DepartureRateLimit, Disruption, DisruptionIndex, GroundDelayProgram,
+        PassengerDemand, SlotManager,
     },
     crew::{Crew, CrewId},
     dispatcher::{strategies, Dispatcher},

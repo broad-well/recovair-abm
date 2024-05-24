@@ -44,8 +44,7 @@ impl Flight {
     }
 
     pub fn est_arrive_time(&self, depart: &DateTime<Utc>) -> DateTime<Utc> {
-        *depart
-            + (self.est_duration() + self.accum_delay.unwrap_or(TimeDelta::zero()))
+        *depart + (self.est_duration() + self.accum_delay.unwrap_or(TimeDelta::zero()))
     }
 
     pub fn act_arrive_time(&self) -> DateTime<Utc> {

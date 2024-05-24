@@ -7,7 +7,11 @@
 //!   - Delay flights if they lack resources
 //!   - Request departure from all `Disruption`s, and follow all delays given
 
-use std::{collections::{BinaryHeap, HashMap, HashSet}, ops::DerefMut, sync::Arc};
+use std::{
+    collections::{BinaryHeap, HashMap, HashSet},
+    ops::DerefMut,
+    sync::Arc,
+};
 
 use crate::{
     aircraft::{Flight, FlightId},
@@ -90,7 +94,7 @@ pub struct Dispatcher {
     pub crew_tolerance_before_reassign: TimeDelta,
 
     pub update_queue: BinaryHeap<DispatcherUpdate>,
-    pub aircraft_reassigned: HashSet<FlightId>
+    pub aircraft_reassigned: HashSet<FlightId>,
 }
 
 macro_rules! send_event {
@@ -138,7 +142,7 @@ impl Dispatcher {
             }
             self.update_flight(update);
         }
-        
+
         // for update in &self.update_queue {
         //     self.model.cancel_flight(update.flight, CancelReason::DelayTimedOut);
         // }
@@ -176,25 +180,23 @@ impl Dispatcher {
                 {
                     let flt = self.model.flight_read(update.flight);
                     let ac_avail = if let Some(tail) = &flt.aircraft_tail {
-                        let aircraft = self
-                            .model
-                            .fleet
-                            .get(tail)
-                            .unwrap()
-                            .read()
-                            .unwrap();
+                        let aircraft = self.model.fleet.get(tail).unwrap().read().unwrap();
                         aircraft.available_time(&*self.model, &flt)
-                    } else { None };
-                    println!("(Flight {}), {:?}, allow {:?}", update.flight, ac_avail, self.model.now() + self.aircraft_tolerance_before_reassign);
+                    } else {
+                        None
+                    };
                     if ac_avail
                         .map(|d| d > self.model.now() + self.aircraft_tolerance_before_reassign)
                         .unwrap_or(true)
                     {
                         // Unavailable
                         if let Some(ref mut selector) = &mut self.aircraft_selector {
+                            let original_acft = flt.aircraft_tail.clone();
                             // There is a reassigner
                             // However, if there is a reassigner and the aircraft assignment is from the reassigner, trust it for now
-                            if flt.aircraft_tail.is_none() || !self.aircraft_reassigned.contains(&flt.id) {
+                            if flt.aircraft_tail.is_none()
+                                || !self.aircraft_reassigned.contains(&flt.id)
+                            {
                                 send_event!(
                                     self.model,
                                     ModelEventType::AircraftSelection(
@@ -205,16 +207,22 @@ impl Dispatcher {
                                 drop(flt);
                                 let ac = selector.deref_mut().select(update.flight, &self.model);
                                 // Apply suggestions
-                                for (flight, aircraft) in selector.deref_mut().reassign_suggestions(&self.model) {
+                                for (flight, aircraft) in
+                                    selector.deref_mut().reassign_suggestions(&self.model)
+                                {
                                     let mut flt = self.model.flight_write(flight);
-                                    if flt.took_off() { continue; }
+                                    if flt.took_off() {
+                                        continue;
+                                    }
 
                                     let reassigned = flt.reassign_aircraft(aircraft.clone());
                                     self.aircraft_reassigned.insert(flight);
                                     if reassigned {
                                         send_event!(
                                             self.model,
-                                            ModelEventType::AircraftAssignmentChanged(flight, aircraft)
+                                            ModelEventType::AircraftAssignmentChanged(
+                                                flight, aircraft
+                                            )
                                         );
                                     }
                                 }
@@ -226,7 +234,10 @@ impl Dispatcher {
                                     self.model.fleet[&ac].write().unwrap().claim(flt.id);
                                     send_event!(
                                         self.model,
-                                        ModelEventType::AircraftAssignmentChanged(flt.id, ac.clone())
+                                        ModelEventType::AircraftAssignmentChanged(
+                                            flt.id,
+                                            ac.clone()
+                                        )
                                     );
                                     self.update_queue.push(DispatcherUpdate {
                                         flight: update.flight,
@@ -236,10 +247,14 @@ impl Dispatcher {
                                     drop(flt);
                                 } else {
                                     // Keep waiting. Maybe it can have a reassignment later
+                                    // TODO make it possible to configure whether to cancel here
                                     self.delay_departure(
                                         self.model.now(),
                                         update.flight,
-                                        vec![(RESOURCE_WAIT, DelayReason::AircraftShortage)]
+                                        vec![(
+                                            RESOURCE_WAIT,
+                                            DelayReason::AircraftShortage(original_acft),
+                                        )],
                                     );
                                 }
                                 return;
@@ -248,7 +263,10 @@ impl Dispatcher {
                                 self.delay_departure(
                                     self.model.now(),
                                     update.flight,
-                                    vec![(RESOURCE_WAIT, DelayReason::AircraftShortage)]
+                                    vec![(
+                                        RESOURCE_WAIT,
+                                        DelayReason::AircraftShortage(original_acft),
+                                    )],
                                 );
                                 return;
                             }
@@ -291,49 +309,57 @@ impl Dispatcher {
                                     Vec::new()
                                 };
                             drop(flt);
-                            let delay_duration: Option<TimeDelta> = if aircraft_cands.is_empty() {
-                                Some(RESOURCE_WAIT)
-                            } else {
-                                let selected_aircraft =
-                                    aircraft_cands.into_iter().min_by_key(|i| i.1).unwrap();
-                                let mut flt = self.model.flight_write(update.flight);
-                                flt.reassign_aircraft(selected_aircraft.0.clone());
-                                {
-                                    self.model.fleet[&selected_aircraft.0]
-                                        .write()
-                                        .unwrap()
-                                        .claim(flt.id);
-                                }
-                                send_event!(
-                                    self.model,
-                                    ModelEventType::AircraftAssignmentChanged(
-                                        flt.id,
-                                        selected_aircraft.0
-                                    )
-                                );
-                                if selected_aircraft.1 <= self.model.now() {
-                                    None
+                            let (new_acft, delay_duration): (Option<String>, Option<TimeDelta>) =
+                                if aircraft_cands.is_empty() {
+                                    (None, Some(RESOURCE_WAIT))
                                 } else {
-                                    Some(selected_aircraft.1 - self.model.now())
-                                }
-                            };
+                                    let selected_aircraft =
+                                        aircraft_cands.into_iter().min_by_key(|i| i.1).unwrap();
+                                    let mut flt = self.model.flight_write(update.flight);
+                                    flt.reassign_aircraft(selected_aircraft.0.clone());
+                                    {
+                                        self.model.fleet[&selected_aircraft.0]
+                                            .write()
+                                            .unwrap()
+                                            .claim(flt.id);
+                                    }
+                                    send_event!(
+                                        self.model,
+                                        ModelEventType::AircraftAssignmentChanged(
+                                            flt.id,
+                                            selected_aircraft.0.clone()
+                                        )
+                                    );
+                                    (
+                                        Some(selected_aircraft.0),
+                                        if selected_aircraft.1 <= self.model.now() {
+                                            None
+                                        } else {
+                                            Some(selected_aircraft.1 - self.model.now())
+                                        },
+                                    )
+                                };
 
                             if let Some(delay_duration) = delay_duration {
                                 self.delay_departure(
                                     self.model.now(),
                                     update.flight,
-                                    vec![(delay_duration, DelayReason::AircraftShortage)]
+                                    vec![(delay_duration, DelayReason::AircraftShortage(new_acft))],
                                 );
                                 return;
                             }
                         }
                     } else if ac_avail.unwrap() > self.model.now() {
                         // Delay within tolerance
+                        let tail = flt.aircraft_tail.clone();
                         drop(flt);
                         self.delay_departure(
                             self.model.now(),
                             update.flight,
-                            vec![(ac_avail.unwrap() - self.model.now(), DelayReason::AircraftShortage)]
+                            vec![(
+                                ac_avail.unwrap() - self.model.now(),
+                                DelayReason::AircraftShortage(tail),
+                            )],
                         );
                         return;
                     }
@@ -382,7 +408,7 @@ impl Dispatcher {
                                 ModelEventType::CrewSelection(flt.id, needs_reassignment.clone())
                             );
                             if let Some(crews) =
-                                selector.select(flt.id, &self.model, needs_reassignment)
+                                selector.select(flt.id, &self.model, needs_reassignment.clone())
                             {
                                 // Reassignment made
                                 flt.reassign_crew(crews.clone());
@@ -406,13 +432,16 @@ impl Dispatcher {
                                 drop(flt);
                                 self.cancel_flight(
                                     update.flight,
-                                    CancelReason::HeavyExpectedDelay(DelayReason::CrewShortage),
+                                    CancelReason::HeavyExpectedDelay(DelayReason::CrewShortage(
+                                        needs_reassignment,
+                                    )),
                                 );
                                 return;
                             }
                         } else {
                             // No crew selector, just wait
                             let mut delay_decision = RESOURCE_WAIT;
+                            let mut delay_cause: Option<Vec<CrewId>> = None;
                             if flt.crew.is_empty()
                                 && !self.model.airports[&flt.origin]
                                     .read()
@@ -458,28 +487,34 @@ impl Dispatcher {
                                         return;
                                     }
                                     delay_decision = wait_time;
+                                    delay_cause = Some(vec![*best_id]);
                                 }
                             }
                             drop(flt);
                             self.delay_departure(
                                 self.model.now(),
                                 update.flight,
-                                vec![(delay_decision, DelayReason::CrewShortage)]
+                                vec![(
+                                    delay_decision,
+                                    DelayReason::CrewShortage(
+                                        delay_cause.unwrap_or(needs_reassignment),
+                                    ),
+                                )],
                             );
                             return;
                         }
                     } else {
-                        let max_wait = critical_crew_set
+                        let (max_wait_cause, max_wait) = critical_crew_set
                             .iter()
-                            .map(|i| i.1.unwrap())
-                            .max()
+                            .max_by_key(|i| i.1.unwrap())
                             .unwrap();
+                        let max_wait = max_wait.unwrap();
                         if max_wait > TimeDelta::zero() {
                             drop(flt);
                             self.delay_departure(
                                 self.model.now(),
                                 update.flight,
-                                vec![(max_wait, DelayReason::CrewShortage)]
+                                vec![(max_wait, DelayReason::CrewShortage(vec![*max_wait_cause]))],
                             );
                             return;
                         }
@@ -499,16 +534,19 @@ impl Dispatcher {
                         if let Some(later) = clear.time() {
                             if later > &self.model.now() {
                                 // Disruption delayed the flight
-                                let delay_dist = disruption.into_iter()
-                                    .map(|(disruption, amount)|
-                                        (amount, DelayReason::Disrupted(disruption.read().unwrap().describe())))
+                                let delay_dist = disruption
+                                    .into_iter()
+                                    .map(|(disruption, amount)| {
+                                        (
+                                            amount,
+                                            DelayReason::Disrupted(
+                                                disruption.read().unwrap().describe(),
+                                            ),
+                                        )
+                                    })
                                     .collect::<Vec<_>>();
 
-                                self.delay_departure(
-                                    self.model.now(),
-                                    update.flight,
-                                    delay_dist
-                                );
+                                self.delay_departure(self.model.now(), update.flight, delay_dist);
                                 return;
                             }
                         }
@@ -532,7 +570,7 @@ impl Dispatcher {
                         self.delay_departure(
                             self.model.now(),
                             update.flight,
-                            vec![(delay, DelayReason::RateLimited(origin))]
+                            vec![(delay, DelayReason::RateLimited(origin))],
                         );
                         return;
                     }
@@ -563,18 +601,27 @@ impl Dispatcher {
                 }
                 // Is the arrival blocked by a disruption?
                 {
-                    if let Some((clearance, disruption)) = self.model.request_arrival(update.flight) {
+                    if let Some((clearance, disruption)) = self.model.request_arrival(update.flight)
+                    {
                         if let Some(time) = clearance.time() {
-                            let delay_dist = disruption.into_iter()
-                                .map(|(disruption, amount)|
-                                    (amount, DelayReason::Disrupted(disruption.read().unwrap().describe())))
+                            let delay_dist = disruption
+                                .into_iter()
+                                .map(|(disruption, amount)| {
+                                    (
+                                        amount,
+                                        DelayReason::Disrupted(
+                                            disruption.read().unwrap().describe(),
+                                        ),
+                                    )
+                                })
                                 .collect::<Vec<_>>();
                             for (delay, reason) in delay_dist {
                                 send_event!(
                                     self.model,
                                     ModelEventType::FlightArrivalDelayed(
                                         update.flight,
-                                        delay, reason
+                                        delay,
+                                        reason
                                     )
                                 );
                             }
@@ -655,10 +702,7 @@ impl Dispatcher {
     }
 
     fn cancel_flight(&mut self, flight: FlightId, reason: CancelReason) {
-        self.model.cancel_flight(
-            flight,
-            reason
-        );
+        self.model.cancel_flight(flight, reason);
         if let Some(ref mut selector) = self.aircraft_selector {
             selector.on_flight_cancel(flight, &self.model);
         }
@@ -681,9 +725,9 @@ impl Dispatcher {
 // MARK: Strategies
 
 pub mod strategies {
-    use std::collections::HashMap;
-    use crate::airport::AirportCode;
     use super::*;
+    use crate::airport::AirportCode;
+    use std::collections::HashMap;
 
     struct GiveUpAircraftSelectionStrategy {}
     impl AircraftSelectionStrategy for GiveUpAircraftSelectionStrategy {
@@ -722,13 +766,17 @@ pub mod strategies {
         }
 
         fn run_dfs(&self, model: &Model) -> HashMap<FlightId, String> {
-            println!("DFS debug: There are {} surplus aircraft and {} unfulfilled flights", self.surplus_aircraft.len(), self.unfulfilled.iter().map(|(_, v)| v.len()).sum::<usize>());
+            println!(
+                "DFS debug: There are {} surplus aircraft and {} unfulfilled flights",
+                self.surplus_aircraft.len(),
+                self.unfulfilled.iter().map(|(_, v)| v.len()).sum::<usize>()
+            );
             #[derive(Clone, Debug)]
             struct Node {
                 trail: Vec<FlightId>,
                 location: AirportCode,
                 next_available: DateTime<Utc>,
-                accum_delay: TimeDelta
+                accum_delay: TimeDelta,
             }
 
             let mut reservations: HashMap<FlightId, String> = HashMap::new();
@@ -738,52 +786,79 @@ pub mod strategies {
                     trail: Vec::new(),
                     location: *origin,
                     next_available: *start_time,
-                    accum_delay: TimeDelta::zero()
+                    accum_delay: TimeDelta::zero(),
                 }];
                 let mut longest: Option<Node> = None;
                 while let Some(node) = frontier.pop() {
                     // println!("searching for {}: {:?}", aircraft, &node);
-                    if longest.is_none() || longest.as_ref().unwrap().trail.len() < node.trail.len() || (longest.as_ref().unwrap().trail.len() == node.trail.len() && longest.as_ref().unwrap().accum_delay > node.accum_delay) {
+                    if longest.is_none()
+                        || longest.as_ref().unwrap().trail.len() < node.trail.len()
+                        || (longest.as_ref().unwrap().trail.len() == node.trail.len()
+                            && longest.as_ref().unwrap().accum_delay > node.accum_delay)
+                    {
                         longest = Some(node.clone());
                     }
-                    let Node { trail, location, next_available, accum_delay } = node;
-                    if trail.len() > 4 { continue }
+                    let Node {
+                        trail,
+                        location,
+                        next_available,
+                        accum_delay,
+                    } = node;
+                    if trail.len() > 4 {
+                        continue;
+                    }
 
                     let next: Vec<u64> = if let Some(flights) = self.unfulfilled.get(&location) {
-                        Box::new(flights.into_iter()
-                            .filter(|next_flight| {
-                                if reservations.contains_key(next_flight) {
-                                    false
-                                } else if let Ok(flight) = model.flights[*next_flight].try_read() {
-                                    flight.sched_depart + flight.dep_delay - next_available > TimeDelta::hours(-2) &&
-                                    next_available - flight.sched_depart < model.config.max_delay
-                                } else {
-                                    false
-                                }
-                            })
-                            .map(|i| *i))
-                            .collect()
+                        Box::new(
+                            flights
+                                .into_iter()
+                                .filter(|next_flight| {
+                                    if reservations.contains_key(next_flight) {
+                                        false
+                                    } else if let Ok(flight) =
+                                        model.flights[*next_flight].try_read()
+                                    {
+                                        flight.sched_depart + flight.dep_delay - next_available
+                                            > TimeDelta::hours(-2)
+                                            && next_available - flight.sched_depart
+                                                < model.config.max_delay
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .map(|i| *i),
+                        )
+                        .collect()
                     } else {
                         Vec::new()
                     };
                     for next_flight in next {
                         let flight_info = model.flight_read(next_flight);
-                        let depart_time = std::cmp::max(flight_info.sched_depart + flight_info.dep_delay, next_available);
+                        let depart_time = std::cmp::max(
+                            flight_info.sched_depart + flight_info.dep_delay,
+                            next_available,
+                        );
                         // Note that accum_delay here means delays incurred by aircraft shortage
-                        let delay = depart_time - (flight_info.sched_depart + flight_info.dep_delay);
+                        let delay =
+                            depart_time - (flight_info.sched_depart + flight_info.dep_delay);
                         let mut next_trail = trail.clone();
                         next_trail.push(next_flight);
-                        let time_available_after = depart_time + flight_info.est_duration() + model.config.aircraft_turnaround_time;
+                        let time_available_after = depart_time
+                            + flight_info.est_duration()
+                            + model.config.aircraft_turnaround_time;
                         frontier.push(Node {
                             trail: next_trail,
                             location: flight_info.dest,
                             next_available: time_available_after,
-                            accum_delay: accum_delay + delay
+                            accum_delay: accum_delay + delay,
                         });
                     }
                 }
                 if let Some(longest) = longest {
-                    println!("DFS resolved: Path for {} (currently at {}) should be {:?}", aircraft, origin, longest);
+                    println!(
+                        "DFS resolved: Path for {} (currently at {}) should be {:?}",
+                        aircraft, origin, longest
+                    );
                     if !longest.trail.is_empty() {
                         num_aircraft_with_path += 1;
                     }
@@ -792,7 +867,14 @@ pub mod strategies {
                     }
                 }
             }
-            println!("[[DFS STATS]] [{}, {}, {}, {}, {}]", model.now(), self.unfulfilled.values().map(Vec::len).sum::<usize>(), reservations.len(), self.surplus_aircraft.len(), num_aircraft_with_path);
+            println!(
+                "[[DFS STATS]] [{}, {}, {}, {}, {}]",
+                model.now(),
+                self.unfulfilled.values().map(Vec::len).sum::<usize>(),
+                reservations.len(),
+                self.surplus_aircraft.len(),
+                num_aircraft_with_path
+            );
             reservations
         }
 
@@ -800,28 +882,35 @@ pub mod strategies {
             for (_, v) in self.unfulfilled.iter_mut() {
                 v.retain(|f| {
                     let flt = model.flight_read(*f);
-                    flt.sched_depart > model.now() - TimeDelta::hours(4) &&
-                        !flt.cancelled
+                    flt.sched_depart > model.now() - TimeDelta::hours(4) && !flt.cancelled
                 });
             }
         }
-
     }
 
     impl AircraftSelectionStrategy for DfsAircraftSelectionStrategy {
         fn select(&mut self, _flight: FlightId, _model: &Model) -> Option<String> {
-            if self.last_ran.is_none() || self.last_ran.unwrap() < _model.now() - TimeDelta::minutes(15) {
+            if self.last_ran.is_none()
+                || self.last_ran.unwrap() < _model.now() - TimeDelta::minutes(15)
+            {
                 self.remove_stale_flights(_model);
                 let reservations = self.run_dfs(_model);
                 self.cached_reservations = Some(reservations);
                 self.last_ran = Some(_model.now());
             }
             // println!("DFS output: {:?}", self.cached_reservations);
-            self.cached_reservations.as_ref().unwrap().get(&_flight).cloned()
+            self.cached_reservations
+                .as_ref()
+                .unwrap()
+                .get(&_flight)
+                .cloned()
         }
 
         fn reassign_suggestions(&self, _model: &Model) -> HashMap<FlightId, String> {
-            self.cached_reservations.as_ref().unwrap_or(&HashMap::new()).clone()
+            self.cached_reservations
+                .as_ref()
+                .unwrap_or(&HashMap::new())
+                .clone()
         }
 
         fn on_flight_cancel(&mut self, flight: FlightId, _model: &Model) {
@@ -831,17 +920,27 @@ pub mod strategies {
                 let acft = _model.fleet[tail].read().unwrap();
                 if let Some(avail_time) = acft.available_time(_model, &flight) {
                     self.surplus_aircraft.retain(|i| i.1 != *tail);
-                    let index = match self.surplus_aircraft.binary_search_by_key(&avail_time, |i| i.0) {
+                    let index = match self
+                        .surplus_aircraft
+                        .binary_search_by_key(&avail_time, |i| i.0)
+                    {
                         Ok(n) => n,
-                        Err(n) => n
+                        Err(n) => n,
                     };
-                    self.surplus_aircraft.insert(index, (avail_time, tail.clone(), flight.origin));
+                    self.surplus_aircraft
+                        .insert(index, (avail_time, tail.clone(), flight.origin));
                 }
                 // Downstream flights --> unfulfilled
                 for (id, v) in &_model.flights {
                     if let Ok(next) = v.read() {
-                        if next.aircraft_tail.as_ref() == Some(tail) && next.sched_depart > flight.sched_depart && !next.cancelled {
-                            self.unfulfilled.entry(next.origin).or_insert_with(Vec::new).push(*id);
+                        if next.aircraft_tail.as_ref() == Some(tail)
+                            && next.sched_depart > flight.sched_depart
+                            && !next.cancelled
+                        {
+                            self.unfulfilled
+                                .entry(next.origin)
+                                .or_insert_with(Vec::new)
+                                .push(*id);
                         }
                     }
                 }
@@ -850,10 +949,15 @@ pub mod strategies {
 
         fn on_flight_depart(&mut self, _flight: FlightId, _model: &Model) {
             let flight = _model.flight_read(_flight);
-            let acft = flight.aircraft_tail.as_ref().expect("Departed flight must have assigned aircraft!");
-            if let Some(index) = self.surplus_aircraft
+            let acft = flight
+                .aircraft_tail
+                .as_ref()
+                .expect("Departed flight must have assigned aircraft!");
+            if let Some(index) = self
+                .surplus_aircraft
                 .iter()
-                .position(|(_, v, _)| *v == *acft) {
+                .position(|(_, v, _)| *v == *acft)
+            {
                 self.surplus_aircraft.remove(index);
             }
             self.unfulfilled.entry(flight.origin).and_modify(|vec| {

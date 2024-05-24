@@ -7,12 +7,7 @@ use std::{
 
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 
-use crate::{
-    aircraft::FlightId,
-    airport::AirportCode,
-    crew::CrewId,
-    model::Model,
-};
+use crate::{aircraft::FlightId, airport::AirportCode, crew::CrewId, model::Model};
 
 pub struct ModelEvent {
     pub time: DateTime<Utc>,
@@ -21,8 +16,8 @@ pub struct ModelEvent {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum DelayReason {
-    CrewShortage,
-    AircraftShortage,
+    CrewShortage(Vec<CrewId>),
+    AircraftShortage(Option<String>),
     Disrupted(String),
     RateLimited(AirportCode),
 }
@@ -103,8 +98,6 @@ pub struct MetricsProcessor {
 //     }
 // }
 
-
-
 impl MetricsProcessor {
     pub fn new(receiver: mpsc::Receiver<ModelEvent>) -> JoinHandle<MetricsProcessor> {
         let proc = Self {
@@ -166,10 +159,12 @@ impl MetricsProcessor {
             let delay = max(TimeDelta::zero(), event.time - flt.sched_arrive);
             self.arrival_delays.push(delay.num_minutes() as u16);
 
-            let mut prev = self.otp
+            let mut prev = self
+                .otp
                 .last_key_value()
                 .map(|i| i.1)
-                .unwrap_or(&(0, 0, 0)).clone();
+                .unwrap_or(&(0, 0, 0))
+                .clone();
             prev.1 += 1;
             if delay.num_minutes() <= 15 {
                 prev.0 += 1;
@@ -193,10 +188,12 @@ impl MetricsProcessor {
             //     );
             // }
         } else if let ModelEventType::FlightCancelled(_, _) = event.data {
-            let mut prev = self.otp
+            let mut prev = self
+                .otp
                 .last_key_value()
                 .map(|i| i.1)
-                .unwrap_or(&(0, 0, 0)).clone();
+                .unwrap_or(&(0, 0, 0))
+                .clone();
             prev.2 += 1;
             self.otp.insert(event.time, prev);
         }

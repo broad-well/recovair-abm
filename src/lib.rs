@@ -10,10 +10,10 @@ mod aircraft;
 mod airport;
 mod crew;
 mod dispatcher;
+mod export;
 mod metrics;
 mod model;
 mod scenario;
-mod export;
 
 macro_rules! try_load {
     ( $cx:expr, $load_op:expr ) => {{
@@ -38,7 +38,7 @@ macro_rules! object_set {
 
 struct FinishedModel {
     model: Arc<Model>,
-    metrics: MetricsProcessor
+    metrics: MetricsProcessor,
 }
 
 impl Finalize for FinishedModel {}
@@ -146,13 +146,23 @@ fn encode_model(mut cx: FunctionContext) -> JsResult<JsObject> {
         };
         let dep_delay_reasons = cx.empty_object();
         for (reason, minutes) in finished_model.metrics.dep_delay_causes.iter() {
-            object_set!(cx, dep_delay_reasons, format!("{:?}", reason).as_str(), cx.number(*minutes));
+            object_set!(
+                cx,
+                dep_delay_reasons,
+                format!("{:?}", reason).as_str(),
+                cx.number(*minutes)
+            );
         }
         let arr_delay_reasons = cx.empty_object();
         for (reason, minutes) in finished_model.metrics.arr_delay_causes.iter() {
-            object_set!(cx, arr_delay_reasons, format!("{:?}", reason).as_str(), cx.number(*minutes));
+            object_set!(
+                cx,
+                arr_delay_reasons,
+                format!("{:?}", reason).as_str(),
+                cx.number(*minutes)
+            );
         }
-        
+
         let obj = cx.empty_object();
         obj.set(&mut cx, "delays", arrival_delay_dist)?;
         obj.set(&mut cx, "otp", otp)?;
@@ -178,7 +188,9 @@ fn run_model(mut cx: FunctionContext) -> JsResult<JsBox<FinishedModel>> {
 
     dispatcher.init_flight_updates();
     dispatcher.run_model();
-    let Some(handle) = model.metrics.write().unwrap().take() else { panic!() };
+    let Some(handle) = model.metrics.write().unwrap().take() else {
+        panic!()
+    };
     let metrics = handle.join().expect("Metrics thread failed");
 
     Ok(cx.boxed(FinishedModel { model, metrics }))
@@ -187,7 +199,6 @@ fn run_model(mut cx: FunctionContext) -> JsResult<JsBox<FinishedModel>> {
 fn export_csvs(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let model = cx.argument::<JsBox<FinishedModel>>(0)?;
     let prefix = cx.argument::<JsString>(1)?.value(&mut cx);
-
 
     if let Err(err) = export::export_finished_model(model.model.clone(), &prefix) {
         return cx.throw_error(err.to_string());
