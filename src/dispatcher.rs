@@ -352,6 +352,12 @@ impl Dispatcher {
                     } else if ac_avail.unwrap() > self.model.now() {
                         // Delay within tolerance
                         let tail = flt.aircraft_tail.clone();
+                        // Make sure that we claim it!
+                        self.model.fleet[tail.as_ref().unwrap()]
+                            .write()
+                            .unwrap()
+                            .claim(update.flight);
+
                         drop(flt);
                         self.delay_departure(
                             self.model.now(),
