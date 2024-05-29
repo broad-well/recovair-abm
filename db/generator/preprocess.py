@@ -13,6 +13,10 @@ airport_coords = (
     ]
 )
 
+config = dict(
+    bump_up_dep_time=True
+)
+
 
 def prep_bts(start_date, end_date, filename):
     finder = tzf.TimezoneFinder()
@@ -89,7 +93,10 @@ def prep_bts(start_date, end_date, filename):
     def get_actual_dep_time(row):
         if pd.isna(row['DEP_DELAY']):
             return pd.NA
-        return row['ScheduledDepTimeUTC'] + pd.Timedelta(minutes=row['DEP_DELAY'])
+        minutes = row['DEP_DELAY']
+        if config['bump_up_dep_time']:
+            minutes = max(0, row['DEP_DELAY']) 
+        return row['ScheduledDepTimeUTC'] + pd.Timedelta(minutes=minutes)
     
     def get_actual_arr_time(row):
         if pd.isna(row['ARR_DELAY']):
@@ -366,28 +373,28 @@ def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_
 
 if __name__ == '__main__':
     # chosen for having zero cancellations that day (congrats southwest)
-    # seed(
-    #     date='2024-01-28',
-    #     airport_capacity_source_start='2024-01-01',
-    #     airport_capacity_source_end='2024-01-31',
-    #     scenario_name='January 28 BTS',
-    #     scenario_id='jan28-bts-import',
-    #     start_time='2024-01-28 00:00:00',
-    #     end_time='2024-01-29 10:00:00',
-    #     days=1,
-    #     flight_source='T_ONTIME_REPORTING_2024.csv'
-    # )
     seed(
-        date='2022-12-22',
-        airport_capacity_source_start='2022-12-01',
-        airport_capacity_source_end='2022-12-31',
-        scenario_name='12-22 BTS (no disruptions)',
-        scenario_id='2022-12-22-bts-import-nodisrupt',
-        start_time='2022-12-22 00:00:00',
-        end_time='2022-12-23 10:00:00',
+        date='2024-01-28',
+        airport_capacity_source_start='2024-01-01',
+        airport_capacity_source_end='2024-01-31',
+        scenario_name='January 28 BTS',
+        scenario_id='2024-01-28-bts-import-bumpup',
+        start_time='2024-01-28 00:00:00',
+        end_time='2024-01-29 10:00:00',
         days=1,
-        flight_source='T_ONTIME_REPORTING_2022.csv'
+        flight_source='T_ONTIME_REPORTING_2024.csv'
     )
+    # seed(
+    #     date='2022-12-22',
+    #     airport_capacity_source_start='2022-12-01',
+    #     airport_capacity_source_end='2022-12-31',
+    #     scenario_name='12-22 BTS (no disruptions)',
+    #     scenario_id='2022-12-22-bts-import-nodisrupt',
+    #     start_time='2022-12-22 00:00:00',
+    #     end_time='2022-12-23 10:00:00',
+    #     days=1,
+    #     flight_source='T_ONTIME_REPORTING_2022.csv'
+    # )
     # seed(
     #     date='2024-01-28',
     #     airport_capacity_source_start='2024-01-01',

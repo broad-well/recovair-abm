@@ -10,6 +10,8 @@ node test_scenario.js 2022-12-22-bts-import results-2022-12-22 > test_log_12-22.
 node test_scenario.js 2022-12-22-bts-import-nodisrupt results-2022-12-22-nodisrupt > test_log_12-22-nodisrupt.log
 node test_scenario.js jan28-bts-import results-2024-01-28 > test_log_01-28.log
 node test_scenario.js 2024-01-28-bts-import results-2024-01-28-nodisrupt > test_log_01-28-nodisrupt.log
+node test_scenario.js 2024-01-28-bts-import-bumpup results-2024-01-28-bumpup > test_log_01-28-bumpup.log
+
 
 # For IWAC only
 #echo "UPDATE scenarios SET aircraft_selector = 'dfs'" | sqlite3 db/generator/test.db

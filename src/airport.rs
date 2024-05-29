@@ -329,7 +329,8 @@ impl<T: PartialEq + Debug> SlotManager<T> {
     fn slot_time_estimate(&self, i: usize, si: usize) -> DateTime<Utc> {
         let result = self.start
             + TimeDelta::hours(i as i64)
-            + TimeDelta::minutes(((si as f32) / (self.max_slot_size as f32) * 60f32).floor() as i64);
+            // + TimeDelta::minutes(((si as f32) / (self.max_slot_size as f32) * 60f32).floor() as i64);
+            + TimeDelta::minutes((si as f32 * (60f32 / self.max_slot_size as f32).min(3f32)).round() as i64);
         debug_assert!(result >= self.start);
         debug_assert!(
             result <= self.end,

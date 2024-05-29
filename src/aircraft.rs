@@ -170,7 +170,9 @@ impl Aircraft {
     }
 
     pub fn claim(&mut self, flight: FlightId) {
-        debug_assert_eq!(self.next_claimed, None);
+        debug_assert!(
+            self.next_claimed.is_none() || self.next_claimed == Some(flight),
+            "{} tried to claim {}, but it was already claimed by {:?}", flight, self.tail, self.next_claimed);
         self.next_claimed = Some(flight);
     }
 
