@@ -873,6 +873,7 @@ pub mod strategies {
                     }
                 }
             }
+            
             println!(
                 "[[DFS STATS]] [{}, {}, {}, {}, {}]",
                 model.now(),

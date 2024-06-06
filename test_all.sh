@@ -14,11 +14,12 @@ node test_scenario.js 2024-01-28-bts-import-bumpup results-2024-01-28-bumpup > t
 
 
 # For IWAC only
-#echo "UPDATE scenarios SET aircraft_selector = 'dfs'" | sqlite3 db/generator/test.db
-#
-#node test_scenario.js 2022-12-22-bts-import results-2022-12-22-aircraftdfs > test_log_12-22-aircraftdfs.log
-#node test_scenario.js 2022-12-22-bts-import-nodisrupt results-2022-12-22-nodisrupt-aircraftdfs > test_log_12-22-nodisrupt-aircraftdfs.log
-#node test_scenario.js jan28-bts-import results-2024-01-28-aircraftdfs > test_log_01-28-aircraftdfs.log
-#node test_scenario.js 2024-01-28-bts-import results-2024-01-28-nodisrupt-aircraftdfs > test_log_01-28-nodisrupt-aircraftdfs.log
-#
-#echo "UPDATE scenarios SET aircraft_selector = NULL" | sqlite3 db/generator/test.db
+echo "UPDATE scenarios SET aircraft_selector = 'dfs'" | sqlite3 db/generator/test.db
+
+node test_scenario.js 2022-12-22-bts-import results-2022-12-22-aircraftdfs > test_log_12-22-aircraftdfs.log
+node test_scenario.js 2022-12-22-bts-import-nodisrupt results-2022-12-22-nodisrupt-aircraftdfs > test_log_12-22-nodisrupt-aircraftdfs.log
+node test_scenario.js jan28-bts-import results-2024-01-28-aircraftdfs > test_log_01-28-aircraftdfs.log
+node test_scenario.js 2024-01-28-bts-import results-2024-01-28-nodisrupt-aircraftdfs > test_log_01-28-nodisrupt-aircraftdfs.log
+node test_scenario.js 2024-01-28-bts-import-bumpup results-2024-01-28-aircraftdfs-bumpup > test_log_01-28-aircraftdfs-bumpup.log
+
+echo "UPDATE scenarios SET aircraft_selector = NULL" | sqlite3 db/generator/test.db

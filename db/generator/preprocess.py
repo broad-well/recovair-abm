@@ -154,7 +154,7 @@ def get_aircraft_types(path: str, aircraft_ref: str):
     return type_table
 
 def add_initial_locations(acft, df):
-    start_loc = df.sort_values('ScheduledDepTimeUTC').groupby('TAIL_NUM').agg({'ORIGIN': 'first'})
+    start_loc = df.sort_values('ActualDepTimeUTC').groupby('TAIL_NUM').agg({'ORIGIN': 'first'})
     merge = pd.merge(
         start_loc.reset_index().rename(columns={'TAIL_NUM': 'N-NUMBER', 'ORIGIN': 'LOCATION'}),
         acft.reset_index(),

@@ -3,7 +3,7 @@ use std::{
     cmp::{min, Ordering},
     collections::{HashMap, HashSet},
     fmt::Debug,
-    iter::empty,
+    iter::{empty, repeat, repeat_with, Repeat},
     sync::{Arc, RwLock},
 };
 
@@ -346,6 +346,89 @@ impl<T: PartialEq + Debug> SlotManager<T> {
 }
 
 #[derive(Debug)]
+pub struct CumulativeSmallSlotManager<T: PartialEq> {
+    pub start: DateTime<Utc>,
+    pub hourly_accumulation_limit: Vec<u32>,
+    pub slots_assigned: RwLock<Vec<Vec<T>>>,
+}
+
+macro_rules! prefix_sum {
+    ( $vec:expr ) => {
+        $vec.scan(0, |sum, x| { *sum += x; Some(*sum) })
+    }
+}
+
+impl<T: PartialEq> CumulativeSmallSlotManager<T> {
+    const HOUR_SLACK: u32 = 3;
+    const SLOT_DURATION: TimeDelta = TimeDelta::minutes(4);
+
+    pub fn new(start: DateTime<Utc>, throughput: Vec<u32>) -> Self {
+        Self {
+            start,
+            slots_assigned: RwLock::new(repeat_with(Vec::new)
+                .take(throughput.len())
+                .collect()),
+            hourly_accumulation_limit: prefix_sum!(throughput.into_iter()).collect()
+        }
+    }
+
+    pub fn allocate_slot(&self, query_time: &DateTime<Utc>, item: T) -> Option<DateTime<Utc>> {
+        let query_index = (*query_time - self.start).num_hours() as u32;
+        // Need to maintain exclusive write access to slots until after they are mutated
+        let mut slots = self.slots_assigned.write().unwrap();
+        let accum = self.assigned_accumulation(&slots);
+        let first_with_capacity = std::iter::zip(accum.iter(), self.hourly_accumulation_limit.iter())
+            .enumerate()
+            .rev()
+            .skip_while(|&(_, (current, limit))| *current < *limit)
+            .next()
+            .map(|pair| pair.0 + 1);
+
+        if first_with_capacity.map(|index| index >= slots.len()) == Some(true) {
+            // all full
+            return None;
+        }
+
+        let first_ok_index = accum.into_iter()
+            .enumerate()
+            .skip(std::cmp::max(query_index as usize, first_with_capacity.unwrap_or(0)))
+            .find(|&(i, assigned_accum)| {
+                let slot_limit = self.expected_throughput(i) + Self::HOUR_SLACK;
+                assigned_accum < self.hourly_accumulation_limit[i] && slots[i].len() < slot_limit as usize
+            })
+            .map(|i| i.0);
+
+        if let Some(index) = first_ok_index {
+            let slot_ordinal = slots[index].len();
+            slots[index].push(item);
+            let time_estimate = self.slot_size(index) * slot_ordinal as i32;
+            Some(self.start + TimeDelta::hours(index as i64) + time_estimate)
+        } else { None }
+    }
+
+    #[inline]
+    fn expected_throughput(&self, i: usize) -> u32 {
+        self.hourly_accumulation_limit[i] -
+            if i == 0 {
+                0
+            } else {
+                self.hourly_accumulation_limit[i - 1]
+            }
+    }
+
+    #[inline]
+    fn slot_size(&self, i: usize) -> TimeDelta {
+        std::cmp::min(TimeDelta::hours(1) / self.expected_throughput(i) as i32, Self::SLOT_DURATION)
+    }
+
+    fn assigned_accumulation(&self, slots: &Vec<Vec<T>>) -> Vec<u32> {
+        Box::new(prefix_sum!(Box::new(slots.iter().map(Vec::len))
+            .map(|x| x as u32)))
+            .collect()
+    }
+}
+
+#[derive(Debug)]
 pub struct GroundDelayProgram {
     pub site: AirportCode,
     // Room to add origin ARTCCs
@@ -611,5 +694,69 @@ mod tests {
         let ask_time = now + TimeDelta::minutes(10);
         let allocation = man.allocate_slot(&ask_time, 3314);
         assert_eq!(allocation, Some(now));
+    }
+
+    #[test]
+    fn cssm_constant_rate_assign() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 1, 1, 1]);
+        let allocation = man.allocate_slot(&now, 812);
+        assert_eq!(allocation, Some(now));
+    }
+
+    /// Check the condition that ensures that the assigned accumulation never exceeds the allocated accumulation.
+    #[test]
+    fn cssm_constant_rate_exceeding() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 1, 1, 1]);
+        
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(130)), 24).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(130)), 26).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(140)), 25).is_some());
+
+        assert_eq!(man.allocate_slot(&(now + TimeDelta::minutes(140)), 80), Some(now + TimeDelta::hours(3)));
+        assert_eq!(man.allocate_slot(&now, 99), None);
+    }
+
+    /// Check the condition that each hour's assigned slot count never exceeds the expected slot count + some margin
+    #[test]
+    fn cssm_slot_count_margin() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![5, 5, 5, 1]);
+        
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(200)), 24).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(210)), 67).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(220)), 80).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(225)), 31).is_some());
+
+        assert_eq!(man.allocate_slot(&(now + TimeDelta::minutes(230)), 90), None);
+    }
+    
+    #[test]
+    fn cssm_limit_hit_many_times() {
+        // throughput: 1 2 1 2 1
+        // accumulation limit: 1 3 4 6 7
+        // precondition: 0 3 0 3 0
+        // precondition accumulation: 0 3(!) 3 6(!) 6
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 2, 1, 2, 1]);
+        
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(80)), 24).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(100)), 67).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(110)), 80).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(190)), 31).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(200)), 12).is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(210)), 26).is_some());
+        
+        // This should be delayed to the last hour because any earlier would make the accumulation surpass the limit.
+        // (if we insert it in hour 0, then the accumulation would be 1 4 4 7 7, which violates 1 3 4 6 7.)
+        let slot_result = man.allocate_slot(&(now + TimeDelta::minutes(10)), 90);
+        assert!(slot_result.is_some());
+        assert!(matches!(slot_result, Some(edct) if edct >= now + TimeDelta::hours(4) && edct <= now + TimeDelta::hours(5)));
+    }
+
+    #[test]
+    fn cssm_slot_exists_already() {
+
     }
 }
