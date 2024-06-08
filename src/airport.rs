@@ -346,10 +346,11 @@ impl<T: PartialEq + Debug> SlotManager<T> {
 }
 
 #[derive(Debug)]
-pub struct CumulativeSmallSlotManager<T: PartialEq> {
+pub struct CumulativeSmallSlotManager<T: Eq + std::hash::Hash + Clone> {
     pub start: DateTime<Utc>,
     pub hourly_accumulation_limit: Vec<u32>,
     pub slots_assigned: RwLock<Vec<Vec<T>>>,
+    slot_index: RwLock<HashMap<T, usize>>,
 }
 
 macro_rules! prefix_sum {
@@ -358,7 +359,7 @@ macro_rules! prefix_sum {
     }
 }
 
-impl<T: PartialEq> CumulativeSmallSlotManager<T> {
+impl<T: Eq + std::hash::Hash + Clone> CumulativeSmallSlotManager<T> {
     const HOUR_SLACK: u32 = 3;
     const SLOT_DURATION: TimeDelta = TimeDelta::minutes(4);
 
@@ -368,7 +369,8 @@ impl<T: PartialEq> CumulativeSmallSlotManager<T> {
             slots_assigned: RwLock::new(repeat_with(Vec::new)
                 .take(throughput.len())
                 .collect()),
-            hourly_accumulation_limit: prefix_sum!(throughput.into_iter()).collect()
+            hourly_accumulation_limit: prefix_sum!(throughput.into_iter()).collect(),
+            slot_index: RwLock::new(HashMap::new()),
         }
     }
 
@@ -391,19 +393,57 @@ impl<T: PartialEq> CumulativeSmallSlotManager<T> {
 
         let first_ok_index = accum.into_iter()
             .enumerate()
-            .skip(std::cmp::max(query_index as usize, first_with_capacity.unwrap_or(0)))
-            .find(|&(i, assigned_accum)| {
-                let slot_limit = self.expected_throughput(i) + Self::HOUR_SLACK;
-                assigned_accum < self.hourly_accumulation_limit[i] && slots[i].len() < slot_limit as usize
-            })
-            .map(|i| i.0);
+            .skip(query_index as usize)
+            .find_map(|(i, assigned_accum)| {
+                let has_capacity_later = i >= first_with_capacity.unwrap_or(0);
+                let slot_limit = (self.expected_throughput(i) + Self::HOUR_SLACK) as usize;
+                let satisfies_accum_limit = assigned_accum < self.hourly_accumulation_limit[i];
 
-        if let Some(index) = first_ok_index {
-            let slot_ordinal = slots[index].len();
-            slots[index].push(item);
+                let existing_position = slots[i].iter().position(|x| *x == item);
+                if let Some(position) = existing_position {
+                    Some((i, position as isize))
+                } else if has_capacity_later && satisfies_accum_limit && slots[i].len() < slot_limit {
+                    Some((i, -1isize))
+                } else {
+                    None
+                }
+            });
+
+        if let Some((index, already_in)) = first_ok_index {
+            // Make sure to remove all existing slots assigned to item later
+            {
+                let index_handle = self.slot_index.read().unwrap();
+                if let Some(existing_slot_index) = index_handle.get(&item) {
+                    let pos = slots[*existing_slot_index].iter().position(|i| *i == item);
+                    debug_assert!(pos.is_some());
+                    slots[*existing_slot_index].remove(pos.unwrap());
+                }
+            }
+            let slot_ordinal = if already_in == -1 {
+                let mut index_handle = self.slot_index.write().unwrap();
+                slots[index].push(item.clone());
+                index_handle.insert(item, index);
+                slots[index].len() - 1
+            } else {
+                already_in as usize
+            };
             let time_estimate = self.slot_size(index) * slot_ordinal as i32;
             Some(self.start + TimeDelta::hours(index as i64) + time_estimate)
         } else { None }
+    }
+
+    pub fn drop_slot(&self, time: &DateTime<Utc>, item: T) -> bool {
+        let query_index = (*time - self.start).num_hours() as usize;
+        let mut slots = self.slots_assigned.write().unwrap();
+        let pos = slots[query_index].iter().position(|existing| *existing == item);
+        if let Some(pos) = pos {
+            let mut index_handle = self.slot_index.write().unwrap();
+            slots[query_index].remove(pos);
+            index_handle.remove(&item);
+            true
+        } else {
+            false
+        }
     }
 
     #[inline]
@@ -756,7 +796,75 @@ mod tests {
     }
 
     #[test]
-    fn cssm_slot_exists_already() {
+    fn cssm_existing_slot_is_earliest() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![2, 2, 2, 2]);
 
+        let first_result = man.allocate_slot(&(now + TimeDelta::minutes(30)), 24);
+        assert!(first_result.is_some());
+        assert!(man.allocate_slot(&(now + TimeDelta::minutes(200)), 92).is_some());
+
+        let again_slot_result = man.allocate_slot(&(now + TimeDelta::minutes(20)), 24);
+        assert_eq!(again_slot_result, first_result);
+    }
+
+    #[test]
+    fn cssm_existing_slot_is_not_earliest() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![2, 2, 2, 2]);
+
+        // Placeholder
+        assert!(man.allocate_slot(&now, 24).is_some());
+        let old_existing = man.allocate_slot(&now, 50);
+        assert!(old_existing.unwrap() > now);
+
+        assert!(man.drop_slot(&now, 24));
+        let new = man.allocate_slot(&now, 50);
+        assert_eq!(new, Some(now));
+
+        // Ensure that the old entry is removed
+        assert_eq!(man.allocate_slot(&now, 80), old_existing);
+    }
+
+    /// Specific edge case:
+    /// 1. Some flight requests a slot in hour 0 (all booked), gets put in hour 1
+    /// 2. One flight drops its slot in hour 0
+    /// 3. The flight requests a slot in hour 0 again. Slot gets *moved* from hour 1 to hour 0
+    /// 
+    /// Ensures that the old slot in hour 1 is removed
+    #[test]
+    fn cssm_existing_slot_is_in_next_hour() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 1, 1]);
+
+        // Placeholder
+        assert!(man.allocate_slot(&now, 24).is_some());
+        let old_existing = man.allocate_slot(&now, 50);
+        assert!(old_existing.unwrap() > now);
+
+        assert!(man.drop_slot(&now, 24));
+        let new = man.allocate_slot(&now, 50);
+        assert_eq!(new, Some(now));
+
+        // Ensure that the old entry is removed
+        assert_eq!(man.allocate_slot(&now, 80), old_existing);
+    }
+
+    #[test]
+    fn cssm_repeat_allocate() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 1, 1]);
+        assert_eq!(man.allocate_slot(&now, 24), Some(now));
+        assert_eq!(man.allocate_slot(&now, 24), Some(now));
+    }
+
+    #[test]
+    fn cssm_repeat_allocate_later() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 1, 1]);
+        assert_eq!(man.allocate_slot(&now, 24), Some(now));
+        assert_eq!(man.allocate_slot(&(now + TimeDelta::hours(1)), 24), Some(now + TimeDelta::hours(1)));
+        // Make sure the earlier one is removed
+        assert_eq!(man.allocate_slot(&now, 30), Some(now));
     }
 }
