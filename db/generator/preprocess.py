@@ -392,7 +392,7 @@ if __name__ == '__main__':
         airport_capacity_source_start='2024-01-01',
         airport_capacity_source_end='2024-01-31',
         scenario_name='January 28 BTS',
-        scenario_id='2024-01-28-bts-import',
+        scenario_id='2024-01-28-bts-import-nodisrupt',
         days=1,
         flight_source='T_ONTIME_REPORTING_2024.csv'
     )
@@ -401,7 +401,7 @@ if __name__ == '__main__':
         airport_capacity_source_start='2022-12-01',
         airport_capacity_source_end='2022-12-31',
         scenario_name='December 22 BTS',
-        scenario_id='2022-12-22-bts-import',
+        scenario_id='2022-12-22-bts-import-nodisrupt',
         days=1,
         flight_source='T_ONTIME_REPORTING_2022.csv'
     )

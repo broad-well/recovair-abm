@@ -7,3 +7,7 @@ npm-debug.log*
 *.log
 /*.csv
 __pycache__/
+
+results-*
+test_log_*
+test_results_*

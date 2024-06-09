@@ -137,7 +137,7 @@ impl Model {
         let flt = self.flights.get(&flight_id).unwrap();
         let disruptions = self.disruptions.lookup(&flt.read().unwrap());
 
-        if let Some((earliest, reason_breakdown)) = self.reserve_earliest(
+        let (earliest, reason_breakdown) = self.reserve_earliest(
             &disruptions,
             Vec::new(),
             &self.now(),
@@ -152,7 +152,12 @@ impl Model {
                     .unwrap()
                     .void_depart_clearance(&flt.read().unwrap(), time, self)
             },
-        ) {
+        );
+        let flt = flt.read().unwrap();
+        for (disruption, time, delay) in &reason_breakdown {
+            disruption.write().unwrap().void_depart_clearance(&flt, &(*time + *delay), self);
+        }
+        if let Some(earliest) = earliest {
             if earliest <= self.now() {
                 Some((Clearance::Cleared, Vec::new()))
             } else {
@@ -170,7 +175,7 @@ impl Model {
         let flt = self.flights.get(&flight_id).unwrap();
         let disruptions = self.disruptions.lookup(&flt.read().unwrap());
 
-        if let Some((earliest, reason_breakdown)) = self.reserve_earliest(
+        let (earliest, reason_breakdown) = self.reserve_earliest(
             &disruptions,
             Vec::new(),
             &self.now(),
@@ -185,7 +190,12 @@ impl Model {
                     .unwrap()
                     .void_arrive_clearance(&flt.read().unwrap(), time, self)
             },
-        ) {
+        );
+        let flt = flt.read().unwrap();
+        for (disruption, time, delay) in &reason_breakdown {
+            disruption.write().unwrap().void_arrive_clearance(&flt, &(*time + *delay), self);
+        }
+        if let Some(earliest) = earliest {
             if earliest <= self.now() {
                 Some((Clearance::Cleared, Vec::new()))
             } else {
@@ -205,7 +215,7 @@ impl Model {
         already_slotted: Option<usize>,
         request: F,
         void: V,
-    ) -> Option<(DateTime<Utc>, Vec<(Arc<RwLock<dyn Disruption>>, DateTime<Utc>, TimeDelta)>)>
+    ) -> (Option<DateTime<Utc>>, Vec<(Arc<RwLock<dyn Disruption>>, DateTime<Utc>, TimeDelta)>)
     where
         F: Fn(Arc<RwLock<dyn Disruption>>, &DateTime<Utc>) -> Clearance,
         V: Fn(Arc<RwLock<dyn Disruption>>, &DateTime<Utc>),
@@ -216,7 +226,7 @@ impl Model {
                 if let Some(later) = request(disruption.clone(), starting).time() {
                     if *later > *starting {
                         for index in cleared_indices {
-                            void(disruptions[index].clone(), starting);
+                            void(disruptions[index].clone(), later);
                         }
                         reasons.push((disruption.clone(), *starting, *later - *starting));
                         if *later >= self.now() + self.config.max_delay {
@@ -224,7 +234,7 @@ impl Model {
                                 "reserve_earliest exceeded max_delay! later={} reasons={:?}",
                                 later, &reasons
                             );
-                            return None;
+                            return (None, reasons);
                         }
                         return self.reserve_earliest(
                             disruptions,
@@ -240,7 +250,7 @@ impl Model {
             cleared_indices.push(i);
         }
         debug_assert_eq!(cleared_indices.len(), disruptions.len());
-        Some((*starting, reasons))
+        (Some(*starting), reasons)
     }
 }
 
