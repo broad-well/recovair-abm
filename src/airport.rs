@@ -422,7 +422,9 @@ impl<T: Eq + std::hash::Hash + Clone> CumulativeSmallSlotManager<T> {
             let slot_ordinal = if already_in == -1 {
                 let mut index_handle = self.slot_index.write().unwrap();
                 slots[index].push(item.clone());
-                index_handle.insert(item, index);
+                if let Some(existing_index) = index_handle.insert(item.clone(), index) {
+                    self.drop_slot_from_borrow(existing_index, item, &mut slots);
+                }
                 slots[index].len() - 1
             } else {
                 already_in as usize
@@ -435,6 +437,10 @@ impl<T: Eq + std::hash::Hash + Clone> CumulativeSmallSlotManager<T> {
     pub fn drop_slot(&self, time: &DateTime<Utc>, item: T) -> bool {
         let query_index = (*time - self.start).num_hours() as usize;
         let mut slots = self.slots_assigned.write().unwrap();
+        self.drop_slot_from_borrow(query_index, item, &mut slots)
+    }
+
+    fn drop_slot_from_borrow(&self, query_index: usize, item: T, slots: &mut Vec<Vec<T>>) -> bool {
         let pos = slots[query_index].iter().position(|existing| *existing == item);
         if let Some(pos) = pos {
             let mut index_handle = self.slot_index.write().unwrap();
@@ -444,6 +450,25 @@ impl<T: Eq + std::hash::Hash + Clone> CumulativeSmallSlotManager<T> {
         } else {
             false
         }
+    }
+
+    #[inline]
+    pub fn end(&self) -> DateTime<Utc> {
+        self.start + TimeDelta::hours(self.hourly_accumulation_limit.len() as i64)
+    }
+
+    #[inline]
+    pub fn contains(&self, time: &DateTime<Utc>) -> bool {
+        *time >= self.start && *time < self.end()
+    }
+
+    #[inline]
+    pub fn slotted_at(&self, time: &DateTime<Utc>, item: &T) -> bool {
+        let slot_index = (*time - self.start).num_hours() as usize;
+        self.slot_index.read().unwrap()
+            .get(item)
+            .map(|it| *it == slot_index)
+            .unwrap_or(false)
     }
 
     #[inline]
@@ -458,7 +483,12 @@ impl<T: Eq + std::hash::Hash + Clone> CumulativeSmallSlotManager<T> {
 
     #[inline]
     fn slot_size(&self, i: usize) -> TimeDelta {
-        std::cmp::min(TimeDelta::hours(1) / self.expected_throughput(i) as i32, Self::SLOT_DURATION)
+        let throughput = self.expected_throughput(i) as i32;
+        if throughput != 0 {
+            std::cmp::min(TimeDelta::hours(1) / throughput, Self::SLOT_DURATION)
+        } else {
+            Self::SLOT_DURATION
+        }
     }
 
     fn assigned_accumulation(&self, slots: &Vec<Vec<T>>) -> Vec<u32> {
@@ -472,18 +502,18 @@ impl<T: Eq + std::hash::Hash + Clone> CumulativeSmallSlotManager<T> {
 pub struct GroundDelayProgram {
     pub site: AirportCode,
     // Room to add origin ARTCCs
-    pub slots: SlotManager<FlightId>,
+    pub slots: CumulativeSmallSlotManager<FlightId>,
     pub reason: Option<String>,
 }
 
 impl GroundDelayProgram {
     #[inline]
-    pub fn start(&self) -> &DateTime<Utc> {
-        &self.slots.start
+    pub fn start(&self) -> DateTime<Utc> {
+        self.slots.start
     }
     #[inline]
-    pub fn end(&self) -> &DateTime<Utc> {
-        &self.slots.end
+    pub fn end(&self) -> DateTime<Utc> {
+        self.slots.end()
     }
 }
 
@@ -513,7 +543,7 @@ impl Disruption for GroundDelayProgram {
         } else {
             // Can't fit during this GDP. check later
             // println!("{} REJECTED {} (slots = {:?})", self.describe(), flight.id, self.slots.slots_assigned);
-            Clearance::Deferred(*self.end() - flight.est_duration())
+            Clearance::Deferred(self.end() - flight.est_duration())
         }
     }
 
@@ -529,20 +559,20 @@ impl Disruption for GroundDelayProgram {
     fn describe(&self) -> String {
         if let Some(reason) = &self.reason {
             format!(
-                "Ground delay program at {} from {} to {} (flights arrive at a rate of {} per hour) due to {}",
+                "Ground delay program at {} from {} to {} (cumulative arrival limit: {:?}) due to {}",
                 self.site,
                 self.start(),
                 self.end(),
-                self.slots.max_slot_size,
+                self.slots.hourly_accumulation_limit,
                 reason
             )
         } else {
             format!(
-                "Ground delay program at {} from {} to {} (flights arrive at a rate of {} per hour)",
+                "Ground delay program at {} from {} to {} (cumulative arrival limit: {:?})",
                 self.site,
                 self.start(),
                 self.end(),
-                self.slots.max_slot_size,
+                self.slots.hourly_accumulation_limit,
             )
         }
     }
@@ -559,7 +589,7 @@ impl Disruption for GroundDelayProgram {
 #[derive(Debug)]
 pub struct DepartureRateLimit {
     pub site: AirportCode,
-    pub slots: SlotManager<FlightId>,
+    pub slots: CumulativeSmallSlotManager<FlightId>,
     pub reason: Option<String>,
 }
 
@@ -588,10 +618,10 @@ impl Disruption for DepartureRateLimit {
             }
         } else {
             // println!("{} REJECTED {} (slots = {:?})", self.describe(), flight.id, self.slots.slots_assigned);
-            if self.slots.end == model.now() {
+            if self.slots.end() == model.now() {
                 Clearance::Cleared
             } else {
-                Clearance::Deferred(self.slots.end)
+                Clearance::Deferred(self.slots.end())
             }
         }
     }
@@ -607,15 +637,15 @@ impl Disruption for DepartureRateLimit {
     fn describe(&self) -> String {
         if let Some(reason) = &self.reason {
             format!(
-                "Departure delay program at {} from {} to {} (flights depart at a rate of {} per hour) due to {}",
-                self.site, self.slots.start, self.slots.end,
-                self.slots.max_slot_size, reason
+                "Departure delay program at {} from {} to {} (cumulative arrival limit: {:?}) due to {}",
+                self.site, self.slots.start, self.slots.end(),
+                self.slots.hourly_accumulation_limit, reason
             )
         } else {
             format!(
-                "Departure delay program at {} from {} to {} (flights depart at a rate of {} per hour)",
-                self.site, self.slots.start, self.slots.end,
-                self.slots.max_slot_size
+                "Departure delay program at {} from {} to {} (cumulative arrival limit: {:?})",
+                self.site, self.slots.start, self.slots.end(),
+                self.slots.hourly_accumulation_limit
             )
         }
     }
@@ -866,5 +896,14 @@ mod tests {
         assert_eq!(man.allocate_slot(&(now + TimeDelta::hours(1)), 24), Some(now + TimeDelta::hours(1)));
         // Make sure the earlier one is removed
         assert_eq!(man.allocate_slot(&now, 30), Some(now));
+    }
+
+    #[test]
+    fn cssm_delayed_allocation_removes_earlier_one() {
+        let now = Utc::now();
+        let man = CumulativeSmallSlotManager::<FlightId>::new(now.clone(), vec![1, 1, 1]);
+        assert_eq!(man.allocate_slot(&now, 20), Some(now));
+        assert_eq!(man.allocate_slot(&(now + TimeDelta::hours(2)), 20), Some(now + TimeDelta::hours(2)));
+        assert!(!man.slotted_at(&now, &20));
     }
 }

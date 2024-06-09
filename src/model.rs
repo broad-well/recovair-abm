@@ -133,7 +133,7 @@ impl Model {
     pub fn request_departure(
         &self,
         flight_id: FlightId,
-    ) -> Option<(Clearance, Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>)> {
+    ) -> Option<(Clearance, Vec<(Arc<RwLock<dyn Disruption>>, DateTime<Utc>, TimeDelta)>)> {
         let flt = self.flights.get(&flight_id).unwrap();
         let disruptions = self.disruptions.lookup(&flt.read().unwrap());
 
@@ -166,7 +166,7 @@ impl Model {
     pub fn request_arrival(
         &self,
         flight_id: FlightId,
-    ) -> Option<(Clearance, Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>)> {
+    ) -> Option<(Clearance, Vec<(Arc<RwLock<dyn Disruption>>, DateTime<Utc>, TimeDelta)>)> {
         let flt = self.flights.get(&flight_id).unwrap();
         let disruptions = self.disruptions.lookup(&flt.read().unwrap());
 
@@ -200,12 +200,12 @@ impl Model {
     fn reserve_earliest<F, V>(
         &self,
         disruptions: &Vec<Arc<RwLock<dyn Disruption>>>,
-        mut reasons: Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>,
+        mut reasons: Vec<(Arc<RwLock<dyn Disruption>>, DateTime<Utc>, TimeDelta)>,
         starting: &DateTime<Utc>,
         already_slotted: Option<usize>,
         request: F,
         void: V,
-    ) -> Option<(DateTime<Utc>, Vec<(Arc<RwLock<dyn Disruption>>, TimeDelta)>)>
+    ) -> Option<(DateTime<Utc>, Vec<(Arc<RwLock<dyn Disruption>>, DateTime<Utc>, TimeDelta)>)>
     where
         F: Fn(Arc<RwLock<dyn Disruption>>, &DateTime<Utc>) -> Clearance,
         V: Fn(Arc<RwLock<dyn Disruption>>, &DateTime<Utc>),
@@ -218,6 +218,7 @@ impl Model {
                         for index in cleared_indices {
                             void(disruptions[index].clone(), starting);
                         }
+                        reasons.push((disruption.clone(), *starting, *later - *starting));
                         if *later >= self.now() + self.config.max_delay {
                             println!(
                                 "reserve_earliest exceeded max_delay! later={} reasons={:?}",
@@ -225,7 +226,6 @@ impl Model {
                             );
                             return None;
                         }
-                        reasons.push((disruption.clone(), *later - *starting));
                         return self.reserve_earliest(
                             disruptions,
                             reasons,

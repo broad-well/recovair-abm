@@ -542,7 +542,7 @@ impl Dispatcher {
                                 // Disruption delayed the flight
                                 let delay_dist = disruption
                                     .into_iter()
-                                    .map(|(disruption, amount)| {
+                                    .map(|(disruption, _, amount)| {
                                         (
                                             amount,
                                             DelayReason::Disrupted(
@@ -612,7 +612,7 @@ impl Dispatcher {
                         if let Some(time) = clearance.time() {
                             let delay_dist = disruption
                                 .into_iter()
-                                .map(|(disruption, amount)| {
+                                .map(|(disruption, _, amount)| {
                                     (
                                         amount,
                                         DelayReason::Disrupted(

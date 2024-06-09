@@ -11,8 +11,7 @@ use rusqlite::Connection;
 use crate::{
     aircraft::{Aircraft, Flight, FlightId},
     airport::{
-        Airport, AirportCode, DepartureRateLimit, Disruption, DisruptionIndex, GroundDelayProgram,
-        PassengerDemand, SlotManager,
+        Airport, AirportCode, CumulativeSmallSlotManager, DepartureRateLimit, Disruption, DisruptionIndex, GroundDelayProgram, PassengerDemand, SlotManager
     },
     crew::{Crew, CrewId},
     dispatcher::{strategies, Dispatcher},
@@ -282,27 +281,73 @@ impl SqliteScenarioLoader {
 
     fn read_disruptions(&self, model: &mut Model) -> Result<(), ScenarioLoaderError> {
         let mut stmt = self.conn.prepare(
-            "SELECT airport, start, end, hourly_rate, type, reason FROM disruptions WHERE sid = ?",
+            "SELECT airport, start, end, hourly_rate, type, reason FROM disruptions WHERE sid = ? ORDER BY airport, type, start ASC",
         )?;
         let mut rows = stmt.query([&self.id])?;
 
-        while let Some(row) = rows.next()? {
-            let start = Self::parse_time(&row.get::<&str, String>("start")?)?;
-            let end = Self::parse_time(&row.get::<&str, String>("end")?)?;
-            let rate: u16 = row.get("hourly_rate")?;
-            let slot_man: SlotManager<FlightId> = SlotManager::new(start, end, rate);
-            let _type: String = row.get("type")?;
-            let site = AirportCode::from(&row.get("airport")?);
-            let disruption: Arc<RwLock<dyn Disruption>> = match _type.as_str() {
+        if let Some(first_row) = rows.next()? {
+            let mut ongoing_reason: String = first_row.get("reason")?;
+            let mut ongoing_site = AirportCode::from(&first_row.get("airport")?);
+            let mut ongoing_type: String = first_row.get("type")?;
+            let mut ongoing_start = Self::parse_time(&first_row.get::<&str, String>("start")?)?;
+            let mut ongoing_end = Self::parse_time(&first_row.get::<&str, String>("end")?)?;
+            let mut ongoing_rates: Vec<u32> = std::iter::repeat(first_row.get("hourly_rate")?)
+                .take((ongoing_end - ongoing_start).num_hours() as usize)
+                .collect();
+
+            while let Some(row) = rows.next()? {
+                let start = Self::parse_time(&row.get::<&str, String>("start")?)?;
+                let end = Self::parse_time(&row.get::<&str, String>("end")?)?;
+                let rate: u32 = row.get("hourly_rate")?;
+                let _type: String = row.get("type")?;
+                let site = AirportCode::from(&row.get("airport")?);
+
+                if site != ongoing_site || _type != ongoing_type || start != ongoing_end {
+                    // The ongoing CSSM is ready to be built
+                    println!("Disruption reading debug: read {:?} for {:?} (type = {})", ongoing_rates, ongoing_site, ongoing_type);
+                    let slot_man = CumulativeSmallSlotManager::<FlightId>::new(ongoing_start, ongoing_rates);
+                    println!("{:?}", slot_man.hourly_accumulation_limit);
+                    let disruption: Arc<RwLock<dyn Disruption>> = match ongoing_type.as_str() {
+                        "gdp" => Arc::new(RwLock::new(GroundDelayProgram {
+                            site: ongoing_site,
+                            slots: slot_man,
+                            reason: Some(ongoing_reason),
+                        })),
+                        "dep" => Arc::new(RwLock::new(DepartureRateLimit {
+                            site: ongoing_site,
+                            slots: slot_man,
+                            reason: Some(ongoing_reason),
+                        })),
+                        _ => {
+                            return Err(ScenarioLoaderError::MissingRequiredDataError(
+                                "unknown disruption type",
+                            ))
+                        }
+                    };
+                    model.disruptions.add_disruption(disruption);
+                    ongoing_rates = Vec::new();
+                    ongoing_site = site;
+                    ongoing_type = _type;
+                    ongoing_start = start;
+                    ongoing_reason = row.get("reason")?;
+                }
+                ongoing_end = end;
+                ongoing_rates.extend(std::iter::repeat(rate).take((end - start).num_hours() as usize));
+            }
+            // TODO fix duplication
+            println!("Disruption reading debug: read {:?} for {:?} (type = {})", ongoing_rates, ongoing_site, ongoing_type);
+            let slot_man = CumulativeSmallSlotManager::<FlightId>::new(ongoing_start, ongoing_rates);
+            println!("{:?}", slot_man.hourly_accumulation_limit);
+            let disruption: Arc<RwLock<dyn Disruption>> = match ongoing_type.as_str() {
                 "gdp" => Arc::new(RwLock::new(GroundDelayProgram {
-                    site,
+                    site: ongoing_site,
                     slots: slot_man,
-                    reason: row.get("reason")?,
+                    reason: Some(ongoing_reason),
                 })),
                 "dep" => Arc::new(RwLock::new(DepartureRateLimit {
-                    site,
+                    site: ongoing_site,
                     slots: slot_man,
-                    reason: row.get("reason")?,
+                    reason: Some(ongoing_reason),
                 })),
                 _ => {
                     return Err(ScenarioLoaderError::MissingRequiredDataError(

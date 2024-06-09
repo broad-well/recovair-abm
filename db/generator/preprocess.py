@@ -330,8 +330,8 @@ def find_hourly_throughputs(month_df: pd.DataFrame, start_time: str, end_time: s
         contains columns `ORIGIN`, `ActualDepTimeUTC`, and `THROUGHPUT`.
     The second DataFrame lists low arrival throughputs and 
         contains columns `DEST`, `ActualArrTimeUTC`, and `THROUGHPUT`."""
-    start_ts = pd.Timestamp(start_time).tz_localize('UTC')
-    end_ts = pd.Timestamp(end_time).tz_localize('UTC')
+    start_ts = pd.Timestamp(start_time).tz_convert('UTC')
+    end_ts = pd.Timestamp(end_time).tz_convert('UTC')
     dep_segment_df = month_df[month_df['ActualDepTimeUTC'].between(start_ts, end_ts)]
     arr_segment_df = month_df[month_df['ActualArrTimeUTC'].between(start_ts, end_ts + pd.Timedelta(hours=10))]
 
@@ -346,15 +346,19 @@ def find_hourly_throughputs(month_df: pd.DataFrame, start_time: str, end_time: s
         r_ahi.rename(columns={'actual': 'THROUGHPUT'})
 
 
-def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_end: str, scenario_name: str, scenario_id: str, start_time: str, end_time: str, days: float, crew_mult=2, flight_source='T_ONTIME_REPORTING.csv'):
+def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_end: str, scenario_name: str, scenario_id: str, days: float, crew_mult=2, flight_source='T_ONTIME_REPORTING.csv'):
     # chosen for having zero cancellations that day (congrats southwest)
     df = prep_bts(date, date, '../truth/' + flight_source)
+    start_time = df['ScheduledDepTimeUTC'].min().to_pydatetime()
+    # print(start_time)
+    end_time = (df['ScheduledArrTimeUTC'].max() + pd.Timedelta(hours=7)).to_pydatetime()
     month_df = prep_bts(airport_capacity_source_start, airport_capacity_source_end, '../truth/' + flight_source)
     # for i in df['ORIGIN'].unique():
     #     print(i)
     acft = get_aircraft_types('../truth/MASTER.txt', '../truth/ACFTREF.txt')
     writer = DatabaseWriter("test.db", scenario_id)
-    writer.write_scenario(scenario_name, start_time, end_time)
+    # chop off the "+00:00"
+    writer.write_scenario(scenario_name, str(start_time)[:-5], str(end_time)[:-5])
     arpts = get_airline_airport_capacities(month_df)
     writer.write_airports(arpts)
     acft = add_initial_locations(acft, df)
@@ -365,9 +369,8 @@ def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_
         '../truth/T_T100D_MARKET_US_CARRIER_ONLY.csv',
         '../truth/T_T100D_SEGMENT_US_CARRIER_ONLY.csv',
         'WN', days=days)
-    abnormal_throughputs = find_hourly_throughputs(month_df, start_time, end_time)
-    print(abnormal_throughputs)
-    writer.write_throughput_disruptions(date, abnormal_throughputs[0], abnormal_throughputs[1])
+    hourly_throughputs = find_hourly_throughputs(month_df, start_time, end_time)
+    writer.write_throughput_disruptions(date, hourly_throughputs[0], hourly_throughputs[1])
     writer.conn.commit()
     writer.conn.close()
 
@@ -378,31 +381,16 @@ if __name__ == '__main__':
         airport_capacity_source_start='2024-01-01',
         airport_capacity_source_end='2024-01-31',
         scenario_name='January 28 BTS',
-        scenario_id='2024-01-28-bts-import-bumpup',
-        start_time='2024-01-28 00:00:00',
-        end_time='2024-01-29 10:00:00',
+        scenario_id='2024-01-28-bts-import-nodisrupt',
         days=1,
         flight_source='T_ONTIME_REPORTING_2024.csv'
     )
-    # seed(
-    #     date='2022-12-22',
-    #     airport_capacity_source_start='2022-12-01',
-    #     airport_capacity_source_end='2022-12-31',
-    #     scenario_name='12-22 BTS (no disruptions)',
-    #     scenario_id='2022-12-22-bts-import-nodisrupt',
-    #     start_time='2022-12-22 00:00:00',
-    #     end_time='2022-12-23 10:00:00',
-    #     days=1,
-    #     flight_source='T_ONTIME_REPORTING_2022.csv'
-    # )
-    # seed(
-    #     date='2024-01-28',
-    #     airport_capacity_source_start='2024-01-01',
-    #     airport_capacity_source_end='2024-01-31',
-    #     scenario_name='January 28 BTS',
-    #     scenario_id='2024-01-28-bts-import',
-    #     start_time='2024-01-28 00:00:00',
-    #     end_time='2024-01-29 10:00:00',
-    #     days=1,
-    #     flight_source='T_ONTIME_REPORTING_2024.csv'
-    # )
+    seed(
+        date='2022-12-22',
+        airport_capacity_source_start='2022-12-01',
+        airport_capacity_source_end='2022-12-31',
+        scenario_name='December 22 BTS',
+        scenario_id='2022-12-22-bts-import-nodisrupt',
+        days=1,
+        flight_source='T_ONTIME_REPORTING_2022.csv'
+    )
