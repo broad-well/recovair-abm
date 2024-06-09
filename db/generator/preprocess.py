@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Generator
 import pandas as pd
 import timezonefinder as tzf
@@ -319,7 +320,7 @@ def synthesize_crew(df, mult=1.4):
     return pd.DataFrame(crew)
 
 
-def find_hourly_throughputs(month_df: pd.DataFrame, start_time: str, end_time: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def find_hourly_throughputs(month_df: pd.DataFrame, start_time: datetime, end_time: datetime) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Find all hourly airport departure and arrival throughputs on the given date.
 
     Fills in missing hours with 0 to ensure that no flights
@@ -336,14 +337,24 @@ def find_hourly_throughputs(month_df: pd.DataFrame, start_time: str, end_time: s
     arr_segment_df = month_df[month_df['ActualArrTimeUTC'].between(start_ts, end_ts + pd.Timedelta(hours=10))]
 
     d_ahi = dep_segment_df.set_index('ActualDepTimeUTC')\
-        .groupby('ORIGIN').resample('1H')['OP_CARRIER_FL_NUM']\
+        .groupby('ORIGIN').resample('1h')['OP_CARRIER_FL_NUM']\
         .count().reset_index(name='actual')
     r_ahi = arr_segment_df.set_index('ActualArrTimeUTC')\
-        .groupby('DEST').resample('1H')['OP_CARRIER_FL_NUM']\
+        .groupby('DEST').resample('1h')['OP_CARRIER_FL_NUM']\
         .count().reset_index(name='actual')
+    
+    idx = pd.date_range(
+        start_time.replace(minute=0, second=0), end_time + timedelta(minutes=1), freq='1h')
+    def fill_missing_times(site_col: str, time_col: str, df: pd.DataFrame):
+        for site in df[site_col].unique():
+            times_found = set(df[time_col][df[site_col] == site])
+            missing_times = [time for time in idx if time not in times_found]
+            appender = pd.DataFrame({site_col: site, time_col: missing_times, 'THROUGHPUT': 0})
+            df = pd.concat([appender, df])
+        return df
 
-    return d_ahi.rename(columns={'actual': 'THROUGHPUT'}),\
-        r_ahi.rename(columns={'actual': 'THROUGHPUT'})
+    return fill_missing_times('ORIGIN', 'ActualDepTimeUTC', d_ahi.rename(columns={'actual': 'THROUGHPUT'})),\
+        fill_missing_times('DEST', 'ActualArrTimeUTC', r_ahi.rename(columns={'actual': 'THROUGHPUT'}))
 
 
 def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_end: str, scenario_name: str, scenario_id: str, days: float, crew_mult=2, flight_source='T_ONTIME_REPORTING.csv'):
@@ -356,9 +367,10 @@ def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_
     # for i in df['ORIGIN'].unique():
     #     print(i)
     acft = get_aircraft_types('../truth/MASTER.txt', '../truth/ACFTREF.txt')
+    hourly_throughputs = find_hourly_throughputs(month_df, start_time, end_time)
     writer = DatabaseWriter("test.db", scenario_id)
     # chop off the "+00:00"
-    writer.write_scenario(scenario_name, str(start_time)[:-5], str(end_time)[:-5])
+    writer.write_scenario(scenario_name, str(start_time)[:-6], str(end_time)[:-6])
     arpts = get_airline_airport_capacities(month_df)
     writer.write_airports(arpts)
     acft = add_initial_locations(acft, df)
@@ -369,7 +381,6 @@ def seed(date: str, airport_capacity_source_start: str, airport_capacity_source_
         '../truth/T_T100D_MARKET_US_CARRIER_ONLY.csv',
         '../truth/T_T100D_SEGMENT_US_CARRIER_ONLY.csv',
         'WN', days=days)
-    hourly_throughputs = find_hourly_throughputs(month_df, start_time, end_time)
     writer.write_throughput_disruptions(date, hourly_throughputs[0], hourly_throughputs[1])
     writer.conn.commit()
     writer.conn.close()
@@ -381,7 +392,7 @@ if __name__ == '__main__':
         airport_capacity_source_start='2024-01-01',
         airport_capacity_source_end='2024-01-31',
         scenario_name='January 28 BTS',
-        scenario_id='2024-01-28-bts-import-nodisrupt',
+        scenario_id='2024-01-28-bts-import',
         days=1,
         flight_source='T_ONTIME_REPORTING_2024.csv'
     )
@@ -390,7 +401,7 @@ if __name__ == '__main__':
         airport_capacity_source_start='2022-12-01',
         airport_capacity_source_end='2022-12-31',
         scenario_name='December 22 BTS',
-        scenario_id='2022-12-22-bts-import-nodisrupt',
+        scenario_id='2022-12-22-bts-import',
         days=1,
         flight_source='T_ONTIME_REPORTING_2022.csv'
     )
